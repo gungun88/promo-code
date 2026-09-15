@@ -1,0 +1,40 @@
+services:
+  promo-code-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: promo-code-backend
+    restart: unless-stopped
+    env_file:
+      - .env.production
+    ports:
+      - "127.0.0.1:18518:8000"
+    volumes:
+      - promo-code-backend-data:/app/backend/.data
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8000/api/health').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  promo-code-frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: promo-code-frontend
+    restart: unless-stopped
+    depends_on:
+      promo-code-backend:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:18517:80"
+
+volumes:
+  promo-code-backend-data:

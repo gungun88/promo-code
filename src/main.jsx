@@ -42,9 +42,9 @@ import logoDark from "./assets/brand/logo-dark.svg";
 import logoLight from "./assets/brand/logo-light.svg";
 import "./styles.css";
 
-const DEALS_KEY = "promo-code-demo-deals";
-const ACCOUNTS_KEY = "promo-code-demo-accounts";
-const SESSION_KEY = "promo-code-demo-session";
+const DEALS_KEY = "promo-code-deals";
+const ACCOUNTS_KEY = "promo-code-merchants";
+const SESSION_KEY = "promo-code-merchant-session";
 const ADMIN_SESSION_KEY = "promo-code-admin-session";
 const ADMIN_LOGS_KEY = "promo-code-admin-logs";
 const ADMIN_SETTINGS_KEY = "promo-code-admin-settings";
@@ -52,11 +52,28 @@ const USER_ACCOUNTS_KEY = "promo-code-user-accounts";
 const USER_SESSION_KEY = "promo-code-user-session";
 const USER_REPORTS_KEY = "promo-code-user-reports";
 const WEBSITE_FILTER_KEY = "promo-code-admin-website-filter";
+const PRODUCTION_STORAGE_VERSION_KEY = "promo-code-production-storage-version";
+const PRODUCTION_STORAGE_VERSION = "2026-09-16";
+const LEGACY_STORAGE_KEYS = [
+  "promo-code-demo-deals",
+  "promo-code-demo-accounts",
+  "promo-code-demo-session",
+  ADMIN_SESSION_KEY,
+  ADMIN_LOGS_KEY,
+  ADMIN_SETTINGS_KEY,
+  USER_ACCOUNTS_KEY,
+  USER_SESSION_KEY,
+  USER_REPORTS_KEY,
+  WEBSITE_FILTER_KEY,
+  DEALS_KEY,
+  ACCOUNTS_KEY,
+  SESSION_KEY,
+];
 const PUBLIC_DEALS_BATCH_SIZE = 20;
 const API_BASE_URL = (
   import.meta.env.VITE_API_BASE_URL || (import.meta.env.DEV ? "http://localhost:8000" : "")
 ).replace(/\/$/, "");
-const DEMO_ADMIN_EMAIL = "admin@promo-code.local";
+const SYSTEM_ADMIN_EMAIL = "system@promo-code.local";
 const DEMO_MERCHANT_ACCOUNT = {
   id: "demo-merchant",
   email: "demo@promo-code.local",
@@ -184,6 +201,16 @@ const DEMO_DEALS = [
   },
 ];
 
+function clearProductionDemoStorage() {
+  if (!import.meta.env.PROD) return;
+  if (window.localStorage.getItem(PRODUCTION_STORAGE_VERSION_KEY) === PRODUCTION_STORAGE_VERSION) {
+    return;
+  }
+
+  LEGACY_STORAGE_KEYS.forEach((key) => window.localStorage.removeItem(key));
+  window.localStorage.setItem(PRODUCTION_STORAGE_VERSION_KEY, PRODUCTION_STORAGE_VERSION);
+}
+
 function readStorage(key, fallback) {
   try {
     const value = window.localStorage.getItem(key);
@@ -198,15 +225,13 @@ function writeStorage(key, value) {
 }
 
 function getDeals() {
-  return readStorage(DEALS_KEY, DEMO_DEALS);
+  const deals = readStorage(DEALS_KEY, []);
+  return Array.isArray(deals) ? deals : [];
 }
 
 function getAccounts() {
   const storedAccounts = readStorage(ACCOUNTS_KEY, []);
-  const accounts = Array.isArray(storedAccounts) ? storedAccounts : [];
-  return accounts.some((account) => account.email === DEMO_MERCHANT_ACCOUNT.email)
-    ? accounts
-    : [DEMO_MERCHANT_ACCOUNT, ...accounts];
+  return Array.isArray(storedAccounts) ? storedAccounts : [];
 }
 
 function getSession() {
@@ -400,7 +425,7 @@ function buildMailSettingsPayload(form) {
 function writeAuditLog({ action, targetType, targetId, description }) {
   const nextLog = {
     id: makeId("audit"),
-    adminEmail: DEMO_ADMIN_EMAIL,
+    adminEmail: SYSTEM_ADMIN_EMAIL,
     action,
     targetType,
     targetId,
@@ -1587,7 +1612,7 @@ function AdminLogin({ navigate, onLogin }) {
             <input
               type="email"
               value={email}
-              placeholder="admin@promo-code.local"
+              placeholder="admin@example.com"
               autoComplete="username"
               required
               onChange={(event) => setEmail(event.target.value)}
@@ -2056,7 +2081,7 @@ function AdminPromoCodes({ refreshKey, showToast }) {
             adminStatus: "removed",
             adminRemovalReason: "管理员下架",
             adminRemovedAt: new Date().toISOString(),
-            adminRemovedBy: DEMO_ADMIN_EMAIL,
+            adminRemovedBy: SYSTEM_ADMIN_EMAIL,
           }
         : item,
     );
@@ -2253,7 +2278,7 @@ function AdminMerchants({ refreshKey, navigate, showToast }) {
             ...item,
             adminStatus: shouldSuspend ? "suspended" : "normal",
             adminSuspendedAt: shouldSuspend ? new Date().toISOString() : "",
-            adminSuspendedBy: shouldSuspend ? DEMO_ADMIN_EMAIL : "",
+            adminSuspendedBy: shouldSuspend ? SYSTEM_ADMIN_EMAIL : "",
           }
         : item,
     );
@@ -2391,7 +2416,7 @@ function AdminReports({ refreshKey, showToast }) {
             ...item,
             status: nextStatus,
             handledAt: new Date().toISOString(),
-            handledBy: DEMO_ADMIN_EMAIL,
+            handledBy: SYSTEM_ADMIN_EMAIL,
           }
         : item,
     );
@@ -2585,7 +2610,7 @@ function AdminWebsiteFilter({ refreshKey, showToast }) {
       reason: form.reason.trim(),
       status: "active",
       createdAt: new Date().toISOString(),
-      createdBy: DEMO_ADMIN_EMAIL,
+      createdBy: SYSTEM_ADMIN_EMAIL,
     };
     writeStorage(WEBSITE_FILTER_KEY, [nextRule, ...getWebsiteBlacklist()]);
     writeAuditLog({
@@ -2835,7 +2860,7 @@ function AdminMerchantDetail({ merchantId, refreshKey, navigate, showToast }) {
               ...item,
               adminStatus: shouldSuspend ? "suspended" : "normal",
               adminSuspendedAt: shouldSuspend ? new Date().toISOString() : "",
-              adminSuspendedBy: shouldSuspend ? DEMO_ADMIN_EMAIL : "",
+              adminSuspendedBy: shouldSuspend ? SYSTEM_ADMIN_EMAIL : "",
             }
           : item,
       ),
@@ -3855,4 +3880,5 @@ function SiteFooter() {
   );
 }
 
+clearProductionDemoStorage();
 createRoot(document.getElementById("root")).render(<App />);
