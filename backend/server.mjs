@@ -6,6 +6,7 @@ import { closeDatabase, initDatabase, query, withTransaction } from "./db.mjs";
 const PORT = Number(process.env.API_PORT || 8000);
 const NODE_ENV = process.env.NODE_ENV || "development";
 const SESSION_TTL_SECONDS = 8 * 60 * 60;
+const MAX_BODY_BYTES = 1_048_576;
 const ADMIN_EMAIL = String(process.env.ADMIN_EMAIL || "").trim().toLowerCase();
 const ADMIN_PASSWORD = String(process.env.ADMIN_PASSWORD || "");
 const MAIL_DRIVER = String(
@@ -33,17 +34,6 @@ const DEFAULT_ANNOUNCEMENT = {
 
 if (NODE_ENV === "production" && (!ADMIN_EMAIL || ADMIN_PASSWORD.length < 16)) {
   throw new Error("Production requires ADMIN_EMAIL and an ADMIN_PASSWORD with at least 16 characters.");
-}
-
-if (
-  NODE_ENV === "production" &&
-  (MAIL_DRIVER !== "smtp" ||
-    !process.env.MAIL_HOST ||
-    !process.env.MAIL_USERNAME ||
-    !process.env.MAIL_PASSWORD ||
-    !process.env.MAIL_FROM)
-) {
-  throw new Error("Production requires SMTP email configuration for real verification emails.");
 }
 
 function hashPassword(password, salt) {
@@ -101,6 +91,20 @@ function parseDate(value) {
   if (!value) return null;
   const date = new Date(`${value}T00:00:00Z`);
   return Number.isNaN(date.getTime()) ? null : value;
+}
+
+function parsePagination(url, defaultLimit = 20, maxLimit = 100) {
+  const requestedPage = Number.parseInt(url.searchParams.get("page") || "1", 10);
+  const requestedLimit = Number.parseInt(
+    url.searchParams.get("limit") || String(defaultLimit),
+    10,
+  );
+  const page = Number.isInteger(requestedPage) && requestedPage > 0 ? requestedPage : 1;
+  const limit =
+    Number.isInteger(requestedLimit) && requestedLimit > 0
+      ? Math.min(requestedLimit, maxLimit)
+      : defaultLimit;
+  return { page, limit, offset: (page - 1) * limit };
 }
 
 function merchantFromRow(row) {
@@ -259,15 +263,33 @@ function sendError(response, status, message, request) {
   sendJson(response, status, { message }, request);
 }
 
-async function readBody(request) {
+function httpError(statusCode, message) {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  return error;
+}
+
+async function readBody(request, maxBytes = MAX_BODY_BYTES) {
   const chunks = [];
-  for await (const chunk of request) chunks.push(chunk);
-  if (!chunks.length) return {};
-  try {
-    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
-  } catch {
-    throw new Error("请求体必须是有效 JSON");
+  let size = 0;
+  for await (const chunk of request) {
+    size += chunk.length;
+    if (size > maxBytes) {
+      throw httpError(413, "请求体过大");
+    }
+    chunks.push(chunk);
   }
+  if (!chunks.length) return {};
+  let value;
+  try {
+    value = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch {
+    throw httpError(400, "请求体必须是有效 JSON");
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw httpError(400, "请求体必须是 JSON 对象");
+  }
+  return value;
 }
 
 function requirePrincipal(principal, response, request, message) {
@@ -295,6 +317,63 @@ async function destroySession(request, response, type) {
 async function getSetting(key, fallback) {
   const result = await query("SELECT value FROM app_settings WHERE key = $1", [key]);
   return result.rows[0]?.value ?? fallback;
+}
+
+function defaultMailSettings() {
+  return {
+    fromAddress: process.env.MAIL_FROM || "",
+    contentFormat: "multipart",
+    driver: MAIL_DRIVER,
+    smtp: {
+      host: process.env.MAIL_HOST || "",
+      port: Number(process.env.MAIL_PORT || 587),
+      encryption: process.env.MAIL_ENCRYPTION || "tls",
+      username: process.env.MAIL_USERNAME || "",
+      password: process.env.MAIL_PASSWORD || "",
+      verifySsl: true,
+    },
+    testRecipient: "",
+  };
+}
+
+function normalizeMailSettings(value = {}, fallback = defaultMailSettings()) {
+  const smtp = value.smtp || {};
+  const fallbackSmtp = fallback.smtp || {};
+  const driver = String(value.driver || fallback.driver || MAIL_DRIVER).trim().toLowerCase();
+  return {
+    fromAddress: String(value.fromAddress ?? fallback.fromAddress ?? "").trim(),
+    contentFormat: ["multipart", "plain", "html"].includes(value.contentFormat)
+      ? value.contentFormat
+      : fallback.contentFormat,
+    driver: ["smtp", "log", "null"].includes(driver) ? driver : fallback.driver || "smtp",
+    smtp: {
+      host: String(smtp.host ?? fallbackSmtp.host ?? "").trim(),
+      port: Number.isInteger(Number(smtp.port ?? fallbackSmtp.port ?? 587))
+        ? Number(smtp.port ?? fallbackSmtp.port ?? 587)
+        : 587,
+      encryption: ["tls", "ssl", ""].includes(smtp.encryption)
+        ? smtp.encryption
+        : fallbackSmtp.encryption || "tls",
+      username: String(smtp.username ?? fallbackSmtp.username ?? "").trim(),
+      password: String(smtp.password ?? fallbackSmtp.password ?? ""),
+      verifySsl: smtp.verifySsl !== false,
+    },
+    testRecipient: String(value.testRecipient ?? fallback.testRecipient ?? "").trim(),
+  };
+}
+
+async function getMailSettings() {
+  const stored = await getSetting("mailSettings", null);
+  return normalizeMailSettings(stored || {}, defaultMailSettings());
+}
+
+function safeMailSettings(settings) {
+  const safe = structuredClone(settings);
+  if (safe.smtp) {
+    safe.smtp.hasPassword = Boolean(safe.smtp.password);
+    delete safe.smtp.password;
+  }
+  return safe;
 }
 
 async function getAdminSettingsPayload() {
@@ -399,17 +478,19 @@ function matchesFilter(website, filters) {
 }
 
 async function sendMail(to, subject, text, html) {
-  const driver = MAIL_DRIVER;
+  const settings = await getMailSettings();
+  const driver = settings.driver;
+  if (driver === "null") return;
   if (driver === "log") {
     console.log(`[mail] ${to}: ${text}`);
     return;
   }
 
-  const host = String(process.env.MAIL_HOST || "");
-  const port = Number(process.env.MAIL_PORT || 587);
-  const username = String(process.env.MAIL_USERNAME || "");
-  const password = String(process.env.MAIL_PASSWORD || "");
-  const from = String(process.env.MAIL_FROM || username || "");
+  const host = settings.smtp.host;
+  const port = settings.smtp.port;
+  const username = settings.smtp.username;
+  const password = settings.smtp.password;
+  const from = settings.fromAddress || username;
   if (!host || !username || !password || !from) {
     throw new Error("邮箱服务未配置，请先配置 MAIL_HOST、MAIL_USERNAME、MAIL_PASSWORD 和 MAIL_FROM");
   }
@@ -417,9 +498,13 @@ async function sendMail(to, subject, text, html) {
   const transporter = nodemailer.createTransport({
     host,
     port,
-    secure: process.env.MAIL_ENCRYPTION === "ssl" || port === 465,
-    requireTLS: process.env.MAIL_ENCRYPTION !== "ssl" && port !== 465,
+    secure: settings.smtp.encryption === "ssl" || port === 465,
+    requireTLS: settings.smtp.encryption !== "ssl" && port !== 465,
     auth: { user: username, pass: password },
+    connectionTimeout: 10_000,
+    greetingTimeout: 10_000,
+    socketTimeout: 15_000,
+    tls: { rejectUnauthorized: settings.smtp.verifySsl },
   });
   await transporter.sendMail({ from, to, subject, text, html });
 }
@@ -454,7 +539,6 @@ async function ensureAdmin() {
 }
 
 async function getPublicDeals(url, request) {
-  const filters = await getActiveFilters();
   const params = [];
   const conditions = [
     "p.status = 'published'",
@@ -463,6 +547,26 @@ async function getPublicDeals(url, request) {
     "m.status = 'active'",
     "m.admin_status <> 'suspended'",
     "(p.end_at IS NULL OR p.end_at >= CURRENT_DATE)",
+    `NOT EXISTS (
+      SELECT 1
+        FROM website_filters f
+       WHERE f.status = 'active'
+         AND (
+           (
+             f.match_type = 'keyword'
+             AND f.keyword <> ''
+             AND lower(m.website) LIKE '%' || lower(f.keyword) || '%'
+           )
+           OR (
+             f.match_type = 'domain'
+             AND f.hostname <> ''
+             AND (
+               lower(regexp_replace(regexp_replace(regexp_replace(regexp_replace(m.website, '^https?://', ''), '^www\\.', ''), '/.*$', ''), ':.*$', '')) = lower(f.hostname)
+               OR lower(regexp_replace(regexp_replace(regexp_replace(regexp_replace(m.website, '^https?://', ''), '^www\\.', ''), '/.*$', ''), ':.*$', '')) LIKE '%.' || lower(f.hostname)
+             )
+           )
+         )
+    )`,
   ];
   const search = String(url.searchParams.get("q") || "").trim().toLowerCase();
   if (search) {
@@ -471,22 +575,48 @@ async function getPublicDeals(url, request) {
       `(lower(p.code) LIKE $${params.length} OR lower(p.offer) LIKE $${params.length} OR lower(m.store_name) LIKE $${params.length} OR lower(p.terms) LIKE $${params.length})`,
     );
   }
+  const { page, limit, offset } = parsePagination(url, 20, 100);
+  const sort = url.searchParams.get("sort");
+  const orderBy =
+    sort === "ending"
+      ? "p.end_at ASC NULLS LAST, p.created_at DESC"
+      : sort === "latest"
+        ? "p.created_at DESC"
+        : "p.discount_value DESC, p.created_at DESC";
+  const whereSql = conditions.join(" AND ");
+  params.push(limit, offset);
   const result = await query(
     `SELECT p.*, m.store_name, m.website, m.email AS owner_email
        FROM promo_codes p
        JOIN merchants m ON m.id = p.merchant_id
-      WHERE ${conditions.join(" AND ")}
-      ORDER BY p.created_at DESC`,
+      WHERE ${whereSql}
+      ORDER BY ${orderBy}
+      LIMIT $${params.length - 1} OFFSET $${params.length}`,
     params,
   );
-  const deals = result.rows.filter((row) => !matchesFilter(row.website, filters)).map(dealFromRow);
+  const total = await query(
+    `SELECT COUNT(*)::int AS total
+       FROM promo_codes p
+       JOIN merchants m ON m.id = p.merchant_id
+      WHERE ${whereSql}`,
+    params.slice(0, -2),
+  );
+  const deals = result.rows.map(dealFromRow);
   const user = await getUser(request);
   let favoriteIds = [];
   if (user) {
     const favorites = await query("SELECT promo_code_id FROM favorites WHERE user_id = $1", [user.id]);
     favoriteIds = favorites.rows.map((row) => row.promo_code_id);
   }
-  return { deals, favoriteIds };
+  const totalCount = Number(total.rows[0]?.total || 0);
+  return {
+    deals,
+    favoriteIds,
+    page,
+    limit,
+    total: totalCount,
+    hasMore: offset + deals.length < totalCount,
+  };
 }
 
 async function handleRequest(request, response) {
@@ -569,7 +699,15 @@ async function handleRequest(request, response) {
       sendError(response, 403, "平台暂时关闭了商户注册", request);
       return;
     }
-    if (NODE_ENV === "production" && MAIL_DRIVER !== "smtp") {
+    const mailSettings = await getMailSettings();
+    if (
+      NODE_ENV === "production" &&
+      (mailSettings.driver !== "smtp" ||
+        !mailSettings.smtp.host ||
+        !mailSettings.smtp.username ||
+        !mailSettings.smtp.password ||
+        !(mailSettings.fromAddress || mailSettings.smtp.username))
+    ) {
       sendError(response, 503, "邮箱服务尚未配置", request);
       return;
     }
@@ -772,34 +910,42 @@ async function handleRequest(request, response) {
     const totalLimit = Number(await getSetting("merchantDealTotalLimit", 50));
     const dailyLimit = Number(await getSetting("merchantDealDailyLimit", 5));
     const publicLimit = Number(await getSetting("merchantDealPublicLimit", 10));
-    const counts = await query(
-      `SELECT
-         COUNT(*)::int AS total_count,
-         COUNT(*) FILTER (WHERE created_at >= CURRENT_DATE)::int AS daily_count,
-         COUNT(*) FILTER (
-           WHERE status = 'published'
-             AND admin_status <> 'removed'
-             AND (end_at IS NULL OR end_at >= CURRENT_DATE)
-         )::int AS public_count
-       FROM promo_codes
-      WHERE merchant_id = $1`,
-      [merchant.id],
-    );
-    const count = counts.rows[0];
-    if (Number.isFinite(totalLimit) && Number(count.total_count) >= totalLimit) {
-      sendError(response, 409, `单个商户最多保留 ${totalLimit} 条优惠码`, request);
-      return;
-    }
-    if (Number.isFinite(dailyLimit) && Number(count.daily_count) >= dailyLimit) {
-      sendError(response, 409, `单个商户每日最多新增 ${dailyLimit} 条优惠码`, request);
-      return;
-    }
-    if (Number.isFinite(publicLimit) && Number(count.public_count) >= publicLimit) {
-      sendError(response, 409, `单个商户最多同时公开展示 ${publicLimit} 条优惠码`, request);
-      return;
-    }
     try {
       const result = await withTransaction(async (client) => {
+        const lockedMerchant = await client.query(
+          "SELECT * FROM merchants WHERE id = $1 FOR UPDATE",
+          [merchant.id],
+        );
+        if (!lockedMerchant.rowCount) throw httpError(404, "商户不存在");
+        if (
+          lockedMerchant.rows[0].status !== "active" ||
+          lockedMerchant.rows[0].admin_status === "suspended"
+        ) {
+          throw httpError(403, "该商户账号当前不可发布优惠码");
+        }
+        const counts = await client.query(
+          `SELECT
+             COUNT(*)::int AS total_count,
+             COUNT(*) FILTER (WHERE created_at >= CURRENT_DATE)::int AS daily_count,
+             COUNT(*) FILTER (
+               WHERE status = 'published'
+                 AND admin_status <> 'removed'
+                 AND (end_at IS NULL OR end_at >= CURRENT_DATE)
+             )::int AS public_count
+           FROM promo_codes
+          WHERE merchant_id = $1`,
+          [merchant.id],
+        );
+        const count = counts.rows[0];
+        if (Number.isFinite(totalLimit) && Number(count.total_count) >= totalLimit) {
+          throw httpError(409, `单个商户最多保留 ${totalLimit} 条优惠码`);
+        }
+        if (Number.isFinite(dailyLimit) && Number(count.daily_count) >= dailyLimit) {
+          throw httpError(409, `单个商户每日最多新增 ${dailyLimit} 条优惠码`);
+        }
+        if (Number.isFinite(publicLimit) && Number(count.public_count) >= publicLimit) {
+          throw httpError(409, `单个商户最多同时公开展示 ${publicLimit} 条优惠码`);
+        }
         const merchantResult = await client.query(
           "UPDATE merchants SET store_name = $1, website = $2 WHERE id = $3 RETURNING *",
           [storeName, website, merchant.id],
@@ -915,44 +1061,55 @@ async function handleRequest(request, response) {
       sendError(response, 403, "该商户账号当前不可修改优惠码", request);
       return;
     }
-    const current = await query(
-      "SELECT status FROM promo_codes WHERE id = $1 AND merchant_id = $2",
-      [merchantToggleMatch[1], merchant.id],
-    );
-    if (!current.rowCount) {
-      sendError(response, 404, "优惠码不存在", request);
-      return;
-    }
-    if (current.rows[0].status === "paused") {
-      const publicLimit = Number(await getSetting("merchantDealPublicLimit", 10));
-      const count = await query(
-        `SELECT COUNT(*)::int AS public_count
-           FROM promo_codes
-          WHERE merchant_id = $1
-            AND status = 'published'
-            AND admin_status <> 'removed'
-            AND (end_at IS NULL OR end_at >= CURRENT_DATE)`,
+    const publicLimit = Number(await getSetting("merchantDealPublicLimit", 10));
+    const result = await withTransaction(async (client) => {
+      const lockedMerchant = await client.query(
+        "SELECT * FROM merchants WHERE id = $1 FOR UPDATE",
         [merchant.id],
       );
-      if (Number.isFinite(publicLimit) && Number(count.rows[0].public_count) >= publicLimit) {
-        sendError(response, 409, `单个商户最多同时公开展示 ${publicLimit} 条优惠码`, request);
-        return;
+      if (!lockedMerchant.rowCount) throw httpError(404, "商户不存在");
+      if (
+        lockedMerchant.rows[0].status !== "active" ||
+        lockedMerchant.rows[0].admin_status === "suspended"
+      ) {
+        throw httpError(403, "该商户账号当前不可修改优惠码");
       }
-    }
-    const result = await query(
-      `UPDATE promo_codes
-          SET status = CASE WHEN status = 'paused' THEN 'published' ELSE 'paused' END,
-              updated_at = now()
-        WHERE id = $1 AND merchant_id = $2
-      RETURNING *`,
-      [merchantToggleMatch[1], merchant.id],
-    );
-    if (!result.rowCount) {
-      sendError(response, 404, "优惠码不存在", request);
-      return;
-    }
+      const current = await client.query(
+        "SELECT status FROM promo_codes WHERE id = $1 AND merchant_id = $2 FOR UPDATE",
+        [merchantToggleMatch[1], merchant.id],
+      );
+      if (!current.rowCount) throw httpError(404, "优惠码不存在");
+      if (current.rows[0].status === "paused") {
+        const count = await client.query(
+          `SELECT COUNT(*)::int AS public_count
+             FROM promo_codes
+            WHERE merchant_id = $1
+              AND status = 'published'
+              AND admin_status <> 'removed'
+              AND (end_at IS NULL OR end_at >= CURRENT_DATE)`,
+          [merchant.id],
+        );
+        if (Number.isFinite(publicLimit) && Number(count.rows[0].public_count) >= publicLimit) {
+          throw httpError(409, `单个商户最多同时公开展示 ${publicLimit} 条优惠码`);
+        }
+      }
+      const updated = await client.query(
+        `UPDATE promo_codes
+            SET status = CASE WHEN status = 'paused' THEN 'published' ELSE 'paused' END,
+                updated_at = now()
+          WHERE id = $1 AND merchant_id = $2
+        RETURNING *`,
+        [merchantToggleMatch[1], merchant.id],
+      );
+      return { deal: updated.rows[0], merchant: lockedMerchant.rows[0] };
+    });
     sendJson(response, 200, {
-      deal: dealFromRow({ ...result.rows[0], store_name: merchant.store_name, website: merchant.website, owner_email: merchant.email }),
+      deal: dealFromRow({
+        ...result.deal,
+        store_name: result.merchant.store_name,
+        website: result.merchant.website,
+        owner_email: result.merchant.email,
+      }),
     }, request);
     return;
   }
@@ -1136,12 +1293,23 @@ async function handleRequest(request, response) {
   }
 
   if (request.method === "GET" && path === "/api/admin/deals") {
+    const { page, limit, offset } = parsePagination(url, 50, 200);
     const result = await query(
       `SELECT p.*, m.store_name, m.website, m.email AS owner_email
          FROM promo_codes p JOIN merchants m ON m.id = p.merchant_id
-        ORDER BY p.created_at DESC`,
+        ORDER BY p.created_at DESC
+        LIMIT $1 OFFSET $2`,
+      [limit, offset],
     );
-    sendJson(response, 200, { deals: result.rows.map(dealFromRow) }, request);
+    const total = await query("SELECT COUNT(*)::int AS total FROM promo_codes");
+    const totalCount = Number(total.rows[0]?.total || 0);
+    sendJson(response, 200, {
+      deals: result.rows.map(dealFromRow),
+      page,
+      limit,
+      total: totalCount,
+      hasMore: offset + result.rows.length < totalCount,
+    }, request);
     return;
   }
 
@@ -1405,30 +1573,20 @@ async function handleRequest(request, response) {
 
   if (path === "/api/admin/mail-settings" || path === "/api/admin/mail-settings/test") {
     if (request.method === "GET" && path === "/api/admin/mail-settings") {
-      const settings = await getSetting("mailSettings", {
-        fromAddress: process.env.MAIL_FROM || "",
-        contentFormat: "multipart",
-        driver: process.env.MAIL_DRIVER || "smtp",
-        smtp: {
-          host: process.env.MAIL_HOST || "",
-          port: Number(process.env.MAIL_PORT || 587),
-          encryption: process.env.MAIL_ENCRYPTION || "tls",
-          username: process.env.MAIL_USERNAME || "",
-          hasPassword: Boolean(process.env.MAIL_PASSWORD),
-          verifySsl: true,
-        },
-        testRecipient: "",
-      });
-      if (settings.smtp) delete settings.smtp.password;
-      sendJson(response, 200, { settings }, request);
+      sendJson(response, 200, { settings: safeMailSettings(await getMailSettings()) }, request);
       return;
     }
 
     if (request.method === "PUT" && path === "/api/admin/mail-settings") {
+      const existing = await getMailSettings();
       const body = await readBody(request);
-      await setSetting("mailSettings", body);
+      const settings = normalizeMailSettings(body, existing);
+      if (!body.smtp || body.smtp.password === undefined || body.smtp.password === "") {
+        settings.smtp.password = existing.smtp.password || "";
+      }
+      await setSetting("mailSettings", settings);
       await addAuditLog(admin, "update_mail_settings", "system", "mail", "更新邮件配置");
-      sendJson(response, 200, { settings: body }, request);
+      sendJson(response, 200, { settings: safeMailSettings(settings) }, request);
       return;
     }
 
@@ -1450,7 +1608,9 @@ await ensureAdmin();
 const server = createServer((request, response) => {
   handleRequest(request, response).catch((error) => {
     console.error(error);
-    if (!response.headersSent) sendError(response, 500, error.message || "服务器内部错误", request);
+    const status = Number(error.statusCode || 500);
+    const message = status >= 500 ? "服务器内部错误" : error.message || "请求处理失败";
+    if (!response.headersSent) sendError(response, status, message, request);
     else response.end();
   });
 });

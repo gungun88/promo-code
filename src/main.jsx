@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   Activity,
@@ -46,6 +46,7 @@ import packageJson from "../package.json";
 import "./styles.css";
 
 const PUBLIC_DEALS_BATCH_SIZE = 20;
+const ADMIN_TABLE_PAGE_SIZE = 50;
 const APP_VERSION = packageJson.version;
 const GITHUB_REPOSITORY_URL = "https://github.com/gungun88/promo-code";
 const API_BASE_URL = (
@@ -191,11 +192,11 @@ function normalizeMailSettings(settings = {}) {
       settings.contentFormat ||
       settings.content_format ||
       DEFAULT_MAIL_SETTINGS.contentFormat,
-    driver:
-      settings.driver ||
-      settings.mailer ||
-      settings.transport ||
-      DEFAULT_MAIL_SETTINGS.driver,
+    driver: ["smtp", "log", "null"].includes(
+      settings.driver || settings.mailer || settings.transport,
+    )
+      ? settings.driver || settings.mailer || settings.transport
+      : DEFAULT_MAIL_SETTINGS.driver,
     smtpHost: settings.smtpHost || settings.smtp_host || smtp.host || "",
     smtpPort: String(settings.smtpPort || settings.smtp_port || smtp.port || "587"),
     smtpEncryption:
@@ -799,30 +800,60 @@ function PublicDirectory({ navigate, showToast, userSession }) {
   const [sort, setSort] = useState("recommended");
   const [deals, setDeals] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [renderLimit, setRenderLimit] = useState(PUBLIC_DEALS_BATCH_SIZE);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [page, setPage] = useState(1);
+  const [totalDeals, setTotalDeals] = useState(0);
+  const [hasMoreDeals, setHasMoreDeals] = useState(false);
   const [favoriteIds, setFavoriteIds] = useState([]);
   const [reportTarget, setReportTarget] = useState(null);
   const loadMoreRef = useRef(null);
 
   useEffect(() => {
+    setPage(1);
+    setDeals([]);
+    setFavoriteIds([]);
+    setTotalDeals(0);
+    setHasMoreDeals(false);
+  }, [query, sort, userSession?.accountId]);
+
+  useEffect(() => {
     let cancelled = false;
-    setLoading(true);
-    apiRequest(`/api/deals${query.trim() ? `?q=${encodeURIComponent(query.trim())}` : ""}`)
+    if (page === 1) setLoading(true);
+    else setLoadingMore(true);
+    const params = new URLSearchParams({
+      page: String(page),
+      limit: String(PUBLIC_DEALS_BATCH_SIZE),
+      sort,
+    });
+    if (query.trim()) params.set("q", query.trim());
+    apiRequest(`/api/deals?${params.toString()}`)
       .then((data) => {
         if (cancelled) return;
-        setDeals(Array.isArray(data?.deals) ? data.deals : []);
-        setFavoriteIds(Array.isArray(data?.favoriteIds) ? data.favoriteIds : []);
+        const incomingDeals = Array.isArray(data?.deals) ? data.deals : [];
+        setDeals((current) =>
+          page === 1
+            ? incomingDeals
+            : [...current, ...incomingDeals.filter((deal) => !current.some((item) => item.id === deal.id))],
+        );
+        setFavoriteIds((current) =>
+          page === 1
+            ? Array.isArray(data?.favoriteIds) ? data.favoriteIds : []
+            : [...new Set([...current, ...(data?.favoriteIds || [])])],
+        );
+        setTotalDeals(Number(data?.total || 0));
+        setHasMoreDeals(Boolean(data?.hasMore));
       })
       .catch((error) => {
         if (!cancelled) showToast(error.message || "优惠码加载失败");
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
+        if (!cancelled) setLoadingMore(false);
       });
     return () => {
       cancelled = true;
     };
-  }, [query, userSession?.accountId]);
+  }, [page, query, sort, userSession?.accountId]);
 
   useEffect(() => {
     if (!userSession) {
@@ -830,51 +861,21 @@ function PublicDirectory({ navigate, showToast, userSession }) {
     }
   }, [userSession]);
 
-  const visibleDeals = useMemo(() => {
-    const normalized = query.trim().toLowerCase();
-    const filtered = deals.filter((deal) => {
-      if (!normalized) return true;
-      return [deal.storeName, deal.code, deal.offer, deal.terms]
-        .join(" ")
-        .toLowerCase()
-        .includes(normalized);
-    });
-
-    return filtered.sort((a, b) => {
-      if (sort === "latest") return b.createdAt.localeCompare(a.createdAt);
-      if (sort === "ending") {
-        if (!a.endAt) return 1;
-        if (!b.endAt) return -1;
-        return a.endAt.localeCompare(b.endAt);
-      }
-      return Number(b.discountValue) - Number(a.discountValue);
-    });
-  }, [deals, query, sort]);
-
-  const renderedDeals = visibleDeals.slice(0, renderLimit);
-  const hasMoreDeals = renderedDeals.length < visibleDeals.length;
-
-  useEffect(() => {
-    setRenderLimit(PUBLIC_DEALS_BATCH_SIZE);
-  }, [visibleDeals]);
-
   useEffect(() => {
     const loadMoreTarget = loadMoreRef.current;
-    if (!loadMoreTarget || !hasMoreDeals) return undefined;
+    if (!loadMoreTarget || !hasMoreDeals || loading || loadingMore) return undefined;
 
     const observer = new IntersectionObserver(
       ([entry]) => {
         if (!entry.isIntersecting) return;
-        setRenderLimit((currentLimit) =>
-          Math.min(currentLimit + PUBLIC_DEALS_BATCH_SIZE, visibleDeals.length),
-        );
+        setPage((currentPage) => currentPage + 1);
       },
       { rootMargin: "0px 0px 240px" },
     );
 
     observer.observe(loadMoreTarget);
     return () => observer.disconnect();
-  }, [hasMoreDeals, visibleDeals.length]);
+  }, [hasMoreDeals, loading, loadingMore]);
 
   const updateQuery = (value) => {
     setQuery(value);
@@ -971,7 +972,7 @@ function PublicDirectory({ navigate, showToast, userSession }) {
               )}
             </label>
             <div className="toolbar-meta">
-              <span className="result-count">{visibleDeals.length} 条优惠码</span>
+              <span className="result-count">{totalDeals} 条优惠码</span>
               <label className="sort-select">
                 <span>排序</span>
                 <select value={sort} onChange={(event) => setSort(event.target.value)}>
@@ -997,7 +998,7 @@ function PublicDirectory({ navigate, showToast, userSession }) {
                 </tr>
               </thead>
               <tbody>
-              {renderedDeals.map((deal) => (
+              {deals.map((deal) => (
                   <DealRow
                     key={deal.id}
                     deal={deal}
@@ -1014,7 +1015,8 @@ function PublicDirectory({ navigate, showToast, userSession }) {
           {hasMoreDeals && <div ref={loadMoreRef} className="directory-load-sentinel" aria-hidden="true" />}
 
           {loading && <div className="empty-state">正在加载优惠码...</div>}
-          {!loading && visibleDeals.length === 0 && (
+          {loadingMore && <div className="empty-state">正在加载更多优惠码...</div>}
+          {!loading && deals.length === 0 && (
             <div className="empty-state">
               <Search size={22} />
               <strong>没有找到匹配的优惠码</strong>
@@ -2025,19 +2027,38 @@ function AdminPromoCodes({ refreshKey, showToast }) {
   const [deals, setDeals] = useState([]);
   const [accounts, setAccounts] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [page, setPage] = useState(1);
+  const [totalDeals, setTotalDeals] = useState(0);
+  const [hasMoreDeals, setHasMoreDeals] = useState(false);
 
-  const reload = () => {
-    setLoading(true);
-    return Promise.all([
-      adminApiRequest("/api/admin/deals"),
-      adminApiRequest("/api/admin/merchants"),
-    ])
+  const reload = (nextPage = 1) => {
+    if (nextPage === 1) setLoading(true);
+    else setLoadingMore(true);
+    const requests = [
+      adminApiRequest(`/api/admin/deals?page=${nextPage}&limit=${ADMIN_TABLE_PAGE_SIZE}`),
+    ];
+    if (nextPage === 1) requests.push(adminApiRequest("/api/admin/merchants"));
+    return Promise.all(requests)
       .then(([dealsData, merchantsData]) => {
-        setDeals(Array.isArray(dealsData?.deals) ? dealsData.deals : []);
-        setAccounts(Array.isArray(merchantsData?.merchants) ? merchantsData.merchants : []);
+        const incomingDeals = Array.isArray(dealsData?.deals) ? dealsData.deals : [];
+        setDeals((current) =>
+          nextPage === 1
+            ? incomingDeals
+            : [...current, ...incomingDeals.filter((deal) => !current.some((item) => item.id === deal.id))],
+        );
+        setPage(nextPage);
+        setTotalDeals(Number(dealsData?.total || 0));
+        setHasMoreDeals(Boolean(dealsData?.hasMore));
+        if (merchantsData) {
+          setAccounts(Array.isArray(merchantsData?.merchants) ? merchantsData.merchants : []);
+        }
       })
       .catch(() => {})
-      .finally(() => setLoading(false));
+      .finally(() => {
+        setLoading(false);
+        setLoadingMore(false);
+      });
   };
 
   useEffect(() => {
@@ -2070,7 +2091,7 @@ function AdminPromoCodes({ refreshKey, showToast }) {
           reason: nextStatus === "removed" ? "管理员下架" : "",
         }),
       });
-      await reload();
+      await reload(1);
       showToast(`优惠码 ${deal.code} 已${nextStatus === "removed" ? "下架" : "恢复"}`, "success");
     } catch (error) {
       showToast(error.message || "优惠码状态更新失败");
@@ -2081,7 +2102,7 @@ function AdminPromoCodes({ refreshKey, showToast }) {
     if (!window.confirm(`确认永久删除优惠码 ${deal.code} 吗？此操作不可恢复。`)) return;
     try {
       await adminApiRequest(`/api/admin/deals/${deal.id}`, { method: "DELETE" });
-      await reload();
+      await reload(1);
       showToast(`优惠码 ${deal.code} 已删除`, "success");
     } catch (error) {
       showToast(error.message || "优惠码删除失败");
@@ -2095,7 +2116,7 @@ function AdminPromoCodes({ refreshKey, showToast }) {
         title="优惠码管理"
         description="查看和处理平台内全部优惠码，发布前不需要审核。"
       />
-      <AdminPanel title="全部优惠码" description={`共 ${filteredDeals.length} 条匹配记录`}>
+      <AdminPanel title="全部优惠码" description={`共 ${totalDeals} 条记录，当前筛选 ${filteredDeals.length} 条`}>
         <div className="admin-filter-bar">
           <label className="admin-search-box">
             <Search size={16} />
@@ -2205,6 +2226,17 @@ function AdminPromoCodes({ refreshKey, showToast }) {
               })}
             </tbody>
           </table>
+          {hasMoreDeals && (
+            <button
+              type="button"
+              className="admin-secondary-button"
+              onClick={() => reload(page + 1)}
+              disabled={loadingMore}
+            >
+              <RefreshCw size={15} className={loadingMore ? "spin" : ""} />
+              {loadingMore ? "正在加载..." : "加载更多"}
+            </button>
+          )}
           {!filteredDeals.length && <AdminEmptyState label="没有符合条件的优惠码" />}
         </div>}
       </AdminPanel>
@@ -3353,11 +3385,8 @@ function AdminMailSettings({ refreshKey, showToast }) {
                   value={form.driver}
                   onChange={(event) => updateField("driver", event.target.value)}
                 >
-                  <option value="mail">mail</option>
-                  <option value="mailgun">mailgun</option>
-                  <option value="postmark">postmark</option>
-                  <option value="log">log</option>
                   <option value="smtp">smtp</option>
+                  <option value="log">log</option>
                   <option value="null">null</option>
                 </select>
               </label>
