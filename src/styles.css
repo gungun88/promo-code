@@ -113,14 +113,22 @@ select {
   place-items: center;
   width: 28px;
   height: 28px;
-  color: #a9a9a9;
+  color: #f5c8df;
+  border: 1px solid rgba(189, 25, 123, 0.42);
   border-radius: 3px;
+  background: rgba(189, 25, 123, 0.14);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.04) inset;
+  transition:
+    color 160ms ease,
+    border-color 160ms ease,
+    background-color 160ms ease;
 }
 
 .utility-repository:hover,
 .utility-repository:focus-visible {
   color: #ffffff;
-  background: #3a3a3a;
+  border-color: rgba(189, 25, 123, 0.72);
+  background: rgba(189, 25, 123, 0.28);
 }
 
 .utility-version {
