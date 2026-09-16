@@ -16,12 +16,14 @@ import {
   Eye,
   FileText,
   Flag,
+  Github,
   Globe2,
   Heart,
   LayoutDashboard,
   LogIn,
   LogOut,
   Mail,
+  Megaphone,
   Menu,
   Pause,
   Play,
@@ -40,236 +42,76 @@ import {
 } from "lucide-react";
 import logoDark from "./assets/brand/logo-dark.svg";
 import logoLight from "./assets/brand/logo-light.svg";
+import packageJson from "../package.json";
 import "./styles.css";
 
-const DEALS_KEY = "promo-code-deals";
-const ACCOUNTS_KEY = "promo-code-merchants";
-const SESSION_KEY = "promo-code-merchant-session";
-const ADMIN_SESSION_KEY = "promo-code-admin-session";
-const ADMIN_LOGS_KEY = "promo-code-admin-logs";
-const ADMIN_SETTINGS_KEY = "promo-code-admin-settings";
-const USER_ACCOUNTS_KEY = "promo-code-user-accounts";
-const USER_SESSION_KEY = "promo-code-user-session";
-const USER_REPORTS_KEY = "promo-code-user-reports";
-const WEBSITE_FILTER_KEY = "promo-code-admin-website-filter";
-const PRODUCTION_STORAGE_VERSION_KEY = "promo-code-production-storage-version";
-const PRODUCTION_STORAGE_VERSION = "2026-09-16";
-const LEGACY_STORAGE_KEYS = [
-  "promo-code-demo-deals",
-  "promo-code-demo-accounts",
-  "promo-code-demo-session",
-  ADMIN_SESSION_KEY,
-  ADMIN_LOGS_KEY,
-  ADMIN_SETTINGS_KEY,
-  USER_ACCOUNTS_KEY,
-  USER_SESSION_KEY,
-  USER_REPORTS_KEY,
-  WEBSITE_FILTER_KEY,
-  DEALS_KEY,
-  ACCOUNTS_KEY,
-  SESSION_KEY,
-];
 const PUBLIC_DEALS_BATCH_SIZE = 20;
+const APP_VERSION = packageJson.version;
+const GITHUB_REPOSITORY_URL = "https://github.com/gungun88/promo-code";
 const API_BASE_URL = (
   import.meta.env.VITE_API_BASE_URL || (import.meta.env.DEV ? "http://localhost:8000" : "")
 ).replace(/\/$/, "");
-const SYSTEM_ADMIN_EMAIL = "system@promo-code.local";
-const DEMO_MERCHANT_ACCOUNT = {
-  id: "demo-merchant",
-  email: "demo@promo-code.local",
-  password: "demo123456",
-  storeName: "测试商户",
-  website: "https://example.com",
-  emailVerified: true,
-  status: "active",
-  adminStatus: "normal",
-  createdAt: "2026-09-01",
+const DEFAULT_ADMIN_SETTINGS = {
+  allowMerchantRegistration: true,
+  siteStatus: "正常运行",
+  merchantDealTotalLimit: 50,
+  merchantDealPublicLimit: 10,
+  merchantDealDailyLimit: 5,
+  preventDuplicateMerchantCodes: true,
+  showGithubLink: true,
+  githubUrl: GITHUB_REPOSITORY_URL,
 };
-
-const DEMO_DEALS = [
-  {
-    id: "demo-1",
-    storeName: "墨点笔记",
-    website: "https://www.notion.so",
-    code: "MO20",
-    offer: "年度套餐 8 折",
-    dealType: "percentage",
-    discountValue: "20",
-    terms: "新用户可用",
-    endAt: "2026-10-31",
-    status: "published",
-    createdAt: "2026-09-10",
-    ownerEmail: "demo@promo-code.local",
-  },
-  {
-    id: "demo-2",
-    storeName: "画布设计",
-    website: "https://www.canva.com",
-    code: "CREATE15",
-    offer: "全站订单立减 15 美元",
-    dealType: "fixed_amount",
-    discountValue: "15",
-    terms: "订单满 80 美元可用",
-    endAt: "2026-11-15",
-    status: "published",
-    createdAt: "2026-09-08",
-    ownerEmail: "demo@promo-code.local",
-  },
-  {
-    id: "demo-3",
-    storeName: "云端办公",
-    website: "https://www.dropbox.com",
-    code: "CLOUD25",
-    offer: "专业版首年 75 折",
-    dealType: "percentage",
-    discountValue: "25",
-    terms: "仅限新订阅用户",
-    endAt: "2026-10-08",
-    status: "published",
-    createdAt: "2026-09-07",
-    ownerEmail: "demo@promo-code.local",
-  },
-  {
-    id: "demo-4",
-    storeName: "专注写作",
-    website: "https://www.grammarly.com",
-    code: "WRITE30",
-    offer: "高级版 7 折",
-    dealType: "percentage",
-    discountValue: "30",
-    terms: "新用户首月可用",
-    endAt: "",
-    status: "published",
-    createdAt: "2026-09-05",
-    ownerEmail: "demo@promo-code.local",
-  },
-  {
-    id: "demo-5",
-    storeName: "灵感图库",
-    website: "https://unsplash.com",
-    code: "PHOTO10",
-    offer: "素材订阅立减 10 美元",
-    dealType: "fixed_amount",
-    discountValue: "10",
-    terms: "首个结算周期可用",
-    endAt: "2026-12-01",
-    status: "published",
-    createdAt: "2026-09-03",
-    ownerEmail: "demo@promo-code.local",
-  },
-  {
-    id: "demo-6",
-    storeName: "团队协作",
-    website: "https://slack.com",
-    code: "TEAM20",
-    offer: "团队方案 8 折",
-    dealType: "percentage",
-    discountValue: "20",
-    terms: "新建付费工作区可用",
-    endAt: "2026-09-30",
-    status: "published",
-    createdAt: "2026-08-30",
-    ownerEmail: "demo@promo-code.local",
-  },
-  {
-    id: "demo-7",
-    storeName: "轻量项目",
-    website: "https://linear.app",
-    code: "LINEAR15",
-    offer: "年度计划立减 15 美元",
-    dealType: "fixed_amount",
-    discountValue: "15",
-    terms: "仅限年度计划",
-    endAt: "2026-10-20",
-    status: "published",
-    createdAt: "2026-08-28",
-    ownerEmail: "demo@promo-code.local",
-  },
-  {
-    id: "demo-8",
-    storeName: "设计协作",
-    website: "https://www.figma.com",
-    code: "FIGMA10",
-    offer: "专业版 9 折",
-    dealType: "percentage",
-    discountValue: "10",
-    terms: "新团队可用",
-    endAt: "2026-11-30",
-    status: "published",
-    createdAt: "2026-08-24",
-    ownerEmail: "demo@promo-code.local",
-  },
-];
-
-function clearProductionDemoStorage() {
-  if (!import.meta.env.PROD) return;
-  if (window.localStorage.getItem(PRODUCTION_STORAGE_VERSION_KEY) === PRODUCTION_STORAGE_VERSION) {
-    return;
-  }
-
-  LEGACY_STORAGE_KEYS.forEach((key) => window.localStorage.removeItem(key));
-  window.localStorage.setItem(PRODUCTION_STORAGE_VERSION_KEY, PRODUCTION_STORAGE_VERSION);
+const DEFAULT_ANNOUNCEMENT = {
+  id: "site-announcement",
+  content: "",
+  link: "",
+  level: "normal",
+  enabled: false,
+  startsAt: "",
+  endsAt: "",
+  updatedAt: "",
+  updatedBy: "",
+};
+function normalizeLimitValue(value, fallback) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return fallback;
+  return Math.max(0, Math.floor(numeric));
 }
 
-function readStorage(key, fallback) {
-  try {
-    const value = window.localStorage.getItem(key);
-    return value ? JSON.parse(value) : fallback;
-  } catch {
-    return fallback;
-  }
+function normalizeAnnouncement(value = {}) {
+  return {
+    ...DEFAULT_ANNOUNCEMENT,
+    ...(value || {}),
+    content: String(value?.content || "").trim(),
+    link: String(value?.link || "").trim(),
+    level: ["normal", "important", "risk"].includes(value?.level)
+      ? value.level
+      : DEFAULT_ANNOUNCEMENT.level,
+    enabled: value?.enabled === true,
+    startsAt: String(value?.startsAt || ""),
+    endsAt: String(value?.endsAt || ""),
+    updatedAt: String(value?.updatedAt || ""),
+    updatedBy: String(value?.updatedBy || ""),
+  };
 }
 
-function writeStorage(key, value) {
-  window.localStorage.setItem(key, JSON.stringify(value));
+function getAnnouncementSignature(announcement) {
+  return announcement?.updatedAt || announcement?.content || "empty-announcement";
 }
 
-function getDeals() {
-  const deals = readStorage(DEALS_KEY, []);
-  return Array.isArray(deals) ? deals : [];
-}
-
-function getAccounts() {
-  const storedAccounts = readStorage(ACCOUNTS_KEY, []);
-  return Array.isArray(storedAccounts) ? storedAccounts : [];
-}
-
-function getSession() {
-  return readStorage(SESSION_KEY, null);
-}
-
-function getUserAccounts() {
-  const accounts = readStorage(USER_ACCOUNTS_KEY, []);
-  return Array.isArray(accounts) ? accounts : [];
-}
-
-function getUserSession() {
-  return readStorage(USER_SESSION_KEY, null);
-}
-
-function getUserReports() {
-  const reports = readStorage(USER_REPORTS_KEY, []);
-  return Array.isArray(reports) ? reports : [];
-}
-
-function getAdminSession() {
-  return readStorage(ADMIN_SESSION_KEY, null);
-}
-
-function getAdminLogs() {
-  return readStorage(ADMIN_LOGS_KEY, []);
-}
-
-function getAdminSettings() {
-  return readStorage(ADMIN_SETTINGS_KEY, {
-    allowMerchantRegistration: true,
-    siteStatus: "正常运行",
-  });
-}
-
-function getWebsiteBlacklist() {
-  const storedRules = readStorage(WEBSITE_FILTER_KEY, []);
-  return Array.isArray(storedRules) ? storedRules : [];
+function isAnnouncementActive(announcement) {
+  if (!announcement?.enabled || !announcement.content) return false;
+  const now = new Date();
+  const startsAt = announcement.startsAt
+    ? new Date(`${announcement.startsAt}T00:00:00`)
+    : null;
+  const endsAt = announcement.endsAt
+    ? new Date(`${announcement.endsAt}T23:59:59`)
+    : null;
+  return (
+    (!startsAt || Number.isNaN(startsAt.getTime()) || startsAt <= now) &&
+    (!endsAt || Number.isNaN(endsAt.getTime()) || endsAt >= now)
+  );
 }
 
 function normalizeWebsiteHostname(value) {
@@ -292,35 +134,13 @@ function getWebsiteRuleLabel(rule) {
   return rule.hostname || "未命名规则";
 }
 
-function findWebsiteBlacklistMatch(website) {
-  const normalizedWebsite = String(website || "").trim().toLowerCase();
-  const hostname = normalizeWebsiteHostname(website);
-  if (!normalizedWebsite && !hostname) return null;
-
-  return getWebsiteBlacklist().find((rule) => {
-    if (rule.status === "disabled") return false;
-    if (rule.matchType === "keyword" || (!rule.hostname && rule.keyword)) {
-      const keyword = String(rule.keyword || "").trim().toLowerCase();
-      return Boolean(keyword && normalizedWebsite.includes(keyword));
-    }
-    if (!hostname || !rule.hostname) return false;
-    return hostname === rule.hostname || hostname.endsWith(`.${rule.hostname}`);
-  }) || null;
-}
-
-function isWebsiteBlacklisted(website) {
-  return Boolean(findWebsiteBlacklistMatch(website));
-}
-
-async function adminApiRequest(path, options = {}) {
-  const adminSession = getAdminSession();
+async function apiRequest(path, options = {}) {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     credentials: "include",
     ...options,
     headers: {
       Accept: "application/json",
       ...(options.body ? { "Content-Type": "application/json" } : {}),
-      ...(adminSession?.token ? { Authorization: `Bearer ${adminSession.token}` } : {}),
       ...(options.headers || {}),
     },
   });
@@ -341,6 +161,8 @@ async function adminApiRequest(path, options = {}) {
 
   return data;
 }
+
+const adminApiRequest = apiRequest;
 
 const DEFAULT_MAIL_SETTINGS = {
   fromAddress: "",
@@ -422,19 +244,6 @@ function buildMailSettingsPayload(form) {
   };
 }
 
-function writeAuditLog({ action, targetType, targetId, description }) {
-  const nextLog = {
-    id: makeId("audit"),
-    adminEmail: SYSTEM_ADMIN_EMAIL,
-    action,
-    targetType,
-    targetId,
-    description,
-    createdAt: new Date().toISOString(),
-  };
-  writeStorage(ADMIN_LOGS_KEY, [nextLog, ...getAdminLogs()].slice(0, 200));
-}
-
 function getDealAdminStatus(deal) {
   if (deal.adminStatus === "removed") return "removed";
   if (deal.status === "paused") return "paused";
@@ -485,30 +294,10 @@ function formatDate(date) {
 
 function daysUntil(date) {
   if (!date) return null;
-  const today = new Date("2026-09-15T00:00:00");
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
   const target = new Date(`${date}T00:00:00`);
   return Math.ceil((target - today) / 86400000);
-}
-
-function isVisible(deal) {
-  const now = new Date("2026-09-15T00:00:00");
-  const starts = !deal.startAt || new Date(`${deal.startAt}T00:00:00`) <= now;
-  const ends = !deal.endAt || new Date(`${deal.endAt}T23:59:59`) >= now;
-  const owner = getAccounts().find((account) => account.email === deal.ownerEmail);
-  const merchantActive =
-    !owner ||
-    (owner.status !== "suspended" &&
-      owner.adminStatus !== "suspended" &&
-      owner.emailVerified !== false);
-  return (
-    deal.status === "published" &&
-    deal.adminStatus !== "removed" &&
-    !isWebsiteBlacklisted(deal.website) &&
-    (!owner || !isWebsiteBlacklisted(owner.website)) &&
-    merchantActive &&
-    starts &&
-    ends
-  );
 }
 
 function useNavigation() {
@@ -531,10 +320,47 @@ function useNavigation() {
 
 function App() {
   const { path, navigate } = useNavigation();
-  const [session, setSession] = useState(getSession);
-  const [userSession, setUserSession] = useState(getUserSession);
-  const [adminSession, setAdminSession] = useState(getAdminSession);
+  const [session, setSession] = useState(null);
+  const [userSession, setUserSession] = useState(null);
+  const [adminSession, setAdminSession] = useState(null);
+  const [authReady, setAuthReady] = useState(false);
   const [toast, setToast] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([
+      apiRequest("/api/auth/merchant/me"),
+      apiRequest("/api/auth/user/me"),
+      apiRequest("/api/admin/me"),
+    ])
+      .then(([merchantData, userData, adminData]) => {
+        if (cancelled) return;
+        const merchant = merchantData?.merchant;
+        const user = userData?.user;
+        const admin = adminData?.admin;
+        setSession(
+          merchant
+            ? { accountId: merchant.id, email: merchant.email, storeName: merchant.storeName }
+            : null,
+        );
+        setUserSession(user ? { accountId: user.id, email: user.email } : null);
+        setAdminSession(admin ? { email: admin.email, name: admin.name } : null);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setSession(null);
+          setUserSession(null);
+          setAdminSession(null);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setAuthReady(true);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!toast) return undefined;
@@ -545,53 +371,48 @@ function App() {
   const showToast = (message, tone = "default") => setToast({ message, tone });
 
   const onLogin = (account) => {
-    const nextSession = {
+    setSession({
       accountId: account.id,
       email: account.email,
       storeName: account.storeName,
-    };
-    writeStorage(SESSION_KEY, nextSession);
-    setSession(nextSession);
+    });
     navigate("/merchant/deals");
   };
 
-  const onLogout = () => {
-    window.localStorage.removeItem(SESSION_KEY);
+  const onLogout = async () => {
+    try {
+      await apiRequest("/api/auth/merchant/logout", { method: "POST" });
+    } catch {
+      // The local React state is still cleared when the server session has expired.
+    }
     setSession(null);
     navigate("/");
   };
 
   const onUserLogin = (account) => {
-    const nextSession = {
+    setUserSession({
       accountId: account.id,
       email: account.email,
-    };
-    writeStorage(USER_SESSION_KEY, nextSession);
-    setUserSession(nextSession);
+    });
     const nextPath = new URLSearchParams(window.location.search).get("next") || "/user/center";
     navigate(nextPath);
   };
 
-  const onUserLogout = () => {
-    window.localStorage.removeItem(USER_SESSION_KEY);
+  const onUserLogout = async () => {
+    try {
+      await apiRequest("/api/auth/user/logout", { method: "POST" });
+    } catch {
+      // The local React state is still cleared when the server session has expired.
+    }
     setUserSession(null);
     navigate("/");
   };
 
   const onAdminLogin = (account) => {
-    const nextSession = {
+    setAdminSession({
       email: account.email,
       name: account.name,
-      ...(account.token ? { token: account.token } : {}),
-    };
-    writeStorage(ADMIN_SESSION_KEY, nextSession);
-    writeAuditLog({
-      action: "admin_login",
-      targetType: "system",
-      targetId: "admin",
-      description: "管理员登录后台",
     });
-    setAdminSession(nextSession);
     navigate("/admin");
   };
 
@@ -599,12 +420,15 @@ function App() {
     try {
       await adminApiRequest("/api/admin/logout", { method: "POST" });
     } catch {
-      // Clear the local session even if the server session has already expired.
+      // Clear the local state even if the server session has already expired.
     }
-    window.localStorage.removeItem(ADMIN_SESSION_KEY);
     setAdminSession(null);
     navigate("/admin/login");
   };
+
+  if (!authReady) {
+    return <div className="app-loading">正在连接服务...</div>;
+  }
 
   let content;
   if (path === "/admin/login") {
@@ -719,6 +543,27 @@ function SiteHeader({ path, navigate, userSession, onUserLogout }) {
   const isDirectoryActive = path === "/";
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const userMenuRef = useRef(null);
+  const [siteSettings, setSiteSettings] = useState(DEFAULT_ADMIN_SETTINGS);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    apiRequest("/api/settings/public")
+      .then((data) => {
+        if (cancelled) return;
+        const publicSettings = data?.settings || data?.data || data;
+        setSiteSettings((current) => ({
+          ...current,
+          ...publicSettings,
+          githubUrl: GITHUB_REPOSITORY_URL,
+        }));
+      })
+      .catch(() => {});
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!userMenuOpen) return undefined;
@@ -761,8 +606,24 @@ function SiteHeader({ path, navigate, userSession, onUserLogout }) {
 
   return (
     <header className="site-header">
+      <AnnouncementBar />
       <div className="utility-bar">
         <div className="wrapper utility-inner">
+          <div className="utility-meta">
+            {siteSettings.showGithubLink !== false && (
+              <a
+                className="utility-repository"
+                href={GITHUB_REPOSITORY_URL}
+                target="_blank"
+                rel="noreferrer"
+                title="访问 GitHub 仓库"
+                aria-label="访问 GitHub 仓库"
+              >
+                <Github size={14} aria-hidden="true" />
+              </a>
+            )}
+            <span className="utility-version">v{APP_VERSION}</span>
+          </div>
           <div className="utility-actions">
             {userSession ? (
               <div className="user-menu" ref={userMenuRef}>
@@ -864,35 +725,114 @@ function SiteHeader({ path, navigate, userSession, onUserLogout }) {
   );
 }
 
+function AnnouncementBar() {
+  const [announcement, setAnnouncement] = useState(DEFAULT_ANNOUNCEMENT);
+  const [dismissedSignature, setDismissedSignature] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+
+    apiRequest("/api/announcement")
+      .then((data) => {
+        if (cancelled) return;
+        setAnnouncement(
+          normalizeAnnouncement(data?.announcement || data?.data?.announcement || data),
+        );
+      })
+      .catch(() => {});
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (
+    !isAnnouncementActive(announcement) ||
+    dismissedSignature === getAnnouncementSignature(announcement)
+  ) {
+    return null;
+  }
+
+  const dismiss = () => {
+    const signature = getAnnouncementSignature(announcement);
+    setDismissedSignature(signature);
+  };
+
+  return (
+    <div className={`announcement-bar announcement-${announcement.level}`} role="status">
+      <div className="wrapper announcement-inner">
+        <div className="announcement-copy">
+          <Megaphone size={15} aria-hidden="true" />
+          <span className="announcement-label">
+            {announcement.level === "risk"
+              ? "风险提示"
+              : announcement.level === "important"
+                ? "重要公告"
+                : "公告"}
+          </span>
+          {announcement.link ? (
+            <a href={announcement.link} target="_blank" rel="noreferrer">
+              {announcement.content}
+            </a>
+          ) : (
+            <span>{announcement.content}</span>
+          )}
+        </div>
+        <button
+          className="announcement-dismiss"
+          type="button"
+          aria-label="关闭公告"
+          title="关闭公告"
+          onClick={dismiss}
+        >
+          <X size={15} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function PublicDirectory({ navigate, showToast, userSession }) {
   const [query, setQuery] = useState(
     () => new URLSearchParams(window.location.search).get("q") || "",
   );
   const [sort, setSort] = useState("recommended");
-  const [deals, setDeals] = useState(getDeals);
+  const [deals, setDeals] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [renderLimit, setRenderLimit] = useState(PUBLIC_DEALS_BATCH_SIZE);
-  const [favoriteIds, setFavoriteIds] = useState(() => {
-    const account = getUserAccounts().find((item) => item.id === userSession?.accountId);
-    return account?.favoriteDealIds || [];
-  });
+  const [favoriteIds, setFavoriteIds] = useState([]);
   const [reportTarget, setReportTarget] = useState(null);
   const loadMoreRef = useRef(null);
 
   useEffect(() => {
-    const onStorage = () => setDeals(getDeals());
-    window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
-  }, []);
+    let cancelled = false;
+    setLoading(true);
+    apiRequest(`/api/deals${query.trim() ? `?q=${encodeURIComponent(query.trim())}` : ""}`)
+      .then((data) => {
+        if (cancelled) return;
+        setDeals(Array.isArray(data?.deals) ? data.deals : []);
+        setFavoriteIds(Array.isArray(data?.favoriteIds) ? data.favoriteIds : []);
+      })
+      .catch((error) => {
+        if (!cancelled) showToast(error.message || "优惠码加载失败");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [query, userSession?.accountId]);
 
   useEffect(() => {
-    const account = getUserAccounts().find((item) => item.id === userSession?.accountId);
-    setFavoriteIds(account?.favoriteDealIds || []);
+    if (!userSession) {
+      setFavoriteIds([]);
+    }
   }, [userSession]);
 
   const visibleDeals = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     const filtered = deals.filter((deal) => {
-      if (!isVisible(deal)) return false;
       if (!normalized) return true;
       return [deal.storeName, deal.code, deal.offer, deal.terms]
         .join(" ")
@@ -948,10 +888,7 @@ function PublicDirectory({ navigate, showToast, userSession }) {
   const copyCode = async (deal) => {
     try {
       await navigator.clipboard.writeText(deal.code);
-      const nextDeals = getDeals().map((item) =>
-        item.id === deal.id ? { ...item, copyCount: (item.copyCount || 0) + 1 } : item,
-      );
-      writeStorage(DEALS_KEY, nextDeals);
+      await apiRequest(`/api/deals/${deal.id}/copy`, { method: "POST" });
       showToast(`优惠码 ${deal.code} 已复制`, "success");
     } catch {
       showToast(`复制失败，请手动复制优惠码 ${deal.code}`);
@@ -965,23 +902,20 @@ function PublicDirectory({ navigate, showToast, userSession }) {
     return false;
   };
 
-  const toggleFavorite = (deal) => {
+  const toggleFavorite = async (deal) => {
     if (!requireUser()) return;
-    const accounts = getUserAccounts();
-    const accountIndex = accounts.findIndex((item) => item.id === userSession.accountId);
-    if (accountIndex < 0) {
-      showToast("用户信息不存在，请重新登录");
-      return;
+    const isFavorite = favoriteIds.includes(deal.id);
+    try {
+      await apiRequest(`/api/user/favorites/${deal.id}`, {
+        method: isFavorite ? "DELETE" : "POST",
+      });
+      setFavoriteIds((current) =>
+        isFavorite ? current.filter((id) => id !== deal.id) : [...current, deal.id],
+      );
+      showToast(isFavorite ? "已取消收藏" : "已收藏优惠码", "success");
+    } catch (error) {
+      showToast(error.message || "收藏操作失败");
     }
-    const currentIds = accounts[accountIndex].favoriteDealIds || [];
-    const isFavorite = currentIds.includes(deal.id);
-    const nextIds = isFavorite
-      ? currentIds.filter((id) => id !== deal.id)
-      : [...currentIds, deal.id];
-    accounts[accountIndex] = { ...accounts[accountIndex], favoriteDealIds: nextIds };
-    writeStorage(USER_ACCOUNTS_KEY, accounts);
-    setFavoriteIds(nextIds);
-    showToast(isFavorite ? "已取消收藏" : "已收藏优惠码", "success");
   };
 
   const openReport = (deal) => {
@@ -989,37 +923,18 @@ function PublicDirectory({ navigate, showToast, userSession }) {
     setReportTarget(deal);
   };
 
-  const submitReport = (reason) => {
+  const submitReport = async (reason) => {
     if (!reportTarget || !userSession) return;
-    const reports = getUserReports();
-    const alreadyReported = reports.some(
-      (report) => report.dealId === reportTarget.id && report.userEmail === userSession.email,
-    );
-    if (alreadyReported) {
-      showToast("你已经举报过这条优惠码");
+    try {
+      await apiRequest("/api/user/reports", {
+        method: "POST",
+        body: JSON.stringify({ dealId: reportTarget.id, reason }),
+      });
       setReportTarget(null);
-      return;
+      showToast("举报已提交，我们会尽快处理", "success");
+    } catch (error) {
+      showToast(error.message || "举报提交失败");
     }
-    const nextReport = {
-      id: makeId("report"),
-      dealId: reportTarget.id,
-      code: reportTarget.code,
-      storeName: reportTarget.storeName,
-      website: reportTarget.website,
-      userEmail: userSession.email,
-      reason,
-      status: "pending",
-      createdAt: new Date().toISOString(),
-    };
-    writeStorage(USER_REPORTS_KEY, [nextReport, ...reports]);
-    writeAuditLog({
-      action: "submit_report",
-      targetType: "promo_code",
-      targetId: reportTarget.id,
-      description: `用户举报优惠码 ${reportTarget.code}`,
-    });
-    setReportTarget(null);
-    showToast("举报已提交，我们会尽快处理", "success");
   };
 
   return (
@@ -1098,7 +1013,8 @@ function PublicDirectory({ navigate, showToast, userSession }) {
 
           {hasMoreDeals && <div ref={loadMoreRef} className="directory-load-sentinel" aria-hidden="true" />}
 
-          {visibleDeals.length === 0 && (
+          {loading && <div className="empty-state">正在加载优惠码...</div>}
+          {!loading && visibleDeals.length === 0 && (
             <div className="empty-state">
               <Search size={22} />
               <strong>没有找到匹配的优惠码</strong>
@@ -1280,16 +1196,23 @@ function UserLogin({ navigate, onLogin }) {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
 
-  const submit = (event) => {
+  const [submitting, setSubmitting] = useState(false);
+
+  const submit = async (event) => {
     event.preventDefault();
-    const account = getUserAccounts().find(
-      (item) => item.email === email.trim().toLowerCase() && item.password === password,
-    );
-    if (!account) {
-      setError("邮箱或密码不正确");
-      return;
+    setError("");
+    setSubmitting(true);
+    try {
+      const data = await apiRequest("/api/auth/user/login", {
+        method: "POST",
+        body: JSON.stringify({ email: email.trim().toLowerCase(), password }),
+      });
+      onLogin(data?.user || data?.data?.user || data?.data);
+    } catch (requestError) {
+      setError(requestError.message || "邮箱或密码不正确");
+    } finally {
+      setSubmitting(false);
     }
-    onLogin(account);
   };
 
   return (
@@ -1315,8 +1238,8 @@ function UserLogin({ navigate, onLogin }) {
           onChange={setPassword}
         />
         {error && <p className="form-error">{error}</p>}
-        <button className="primary-button full-width" type="submit">
-          登录
+        <button className="primary-button full-width" type="submit" disabled={submitting}>
+          {submitting ? "登录中..." : "登录"}
           <LogIn size={16} />
         </button>
         <p className="auth-switch">
@@ -1334,7 +1257,9 @@ function UserRegister({ navigate, onLogin }) {
   const [form, setForm] = useState({ email: "", password: "", confirmPassword: "" });
   const [error, setError] = useState("");
 
-  const submit = (event) => {
+  const [submitting, setSubmitting] = useState(false);
+
+  const submit = async (event) => {
     event.preventDefault();
     const email = form.email.trim().toLowerCase();
     setError("");
@@ -1350,20 +1275,18 @@ function UserRegister({ navigate, onLogin }) {
       setError("两次输入的密码不一致");
       return;
     }
-    const accounts = getUserAccounts();
-    if (accounts.some((account) => account.email === email)) {
-      setError("这个邮箱已经注册，请直接登录");
-      return;
+    setSubmitting(true);
+    try {
+      const data = await apiRequest("/api/auth/user/register", {
+        method: "POST",
+        body: JSON.stringify({ email, password: form.password }),
+      });
+      onLogin(data?.user || data?.data?.user || data?.data);
+    } catch (requestError) {
+      setError(requestError.message || "注册失败");
+    } finally {
+      setSubmitting(false);
     }
-    const account = {
-      id: makeId("user"),
-      email,
-      password: form.password,
-      favoriteDealIds: [],
-      createdAt: new Date().toISOString(),
-    };
-    writeStorage(USER_ACCOUNTS_KEY, [...accounts, account]);
-    onLogin(account);
   };
 
   return (
@@ -1396,8 +1319,8 @@ function UserRegister({ navigate, onLogin }) {
           onChange={(value) => setForm({ ...form, confirmPassword: value })}
         />
         {error && <p className="form-error">{error}</p>}
-        <button className="primary-button full-width" type="submit">
-          注册并登录
+        <button className="primary-button full-width" type="submit" disabled={submitting}>
+          {submitting ? "注册中..." : "注册并登录"}
           <UserPlus size={16} />
         </button>
         <p className="auth-switch">
@@ -1412,12 +1335,27 @@ function UserRegister({ navigate, onLogin }) {
 }
 
 function UserCenter({ userSession, navigate, onLogout, showToast }) {
-  const [version, setVersion] = useState(0);
-  const account = getUserAccounts().find((item) => item.id === userSession.accountId);
-  const favoriteIds = account?.favoriteDealIds || [];
-  const favoriteDeals = getDeals().filter((deal) => favoriteIds.includes(deal.id));
-  const reports = getUserReports().filter((report) => report.userEmail === userSession.email);
-  void version;
+  const [favoriteDeals, setFavoriteDeals] = useState([]);
+  const [reports, setReports] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    Promise.all([apiRequest("/api/user/favorites"), apiRequest("/api/user/reports")])
+      .then(([favoritesData, reportsData]) => {
+        if (cancelled) return;
+        setFavoriteDeals(Array.isArray(favoritesData?.deals) ? favoritesData.deals : []);
+        setReports(Array.isArray(reportsData?.reports) ? reportsData.reports : []);
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [userSession.accountId]);
 
   useEffect(() => {
     const section = window.location.hash.slice(1);
@@ -1428,17 +1366,14 @@ function UserCenter({ userSession, navigate, onLogout, showToast }) {
     return () => window.cancelAnimationFrame(frame);
   }, []);
 
-  const removeFavorite = (dealId) => {
-    const accounts = getUserAccounts();
-    const index = accounts.findIndex((item) => item.id === userSession.accountId);
-    if (index < 0) return;
-    accounts[index] = {
-      ...accounts[index],
-      favoriteDealIds: (accounts[index].favoriteDealIds || []).filter((id) => id !== dealId),
-    };
-    writeStorage(USER_ACCOUNTS_KEY, accounts);
-    setVersion((value) => value + 1);
-    showToast("已取消收藏", "success");
+  const removeFavorite = async (dealId) => {
+    try {
+      await apiRequest(`/api/user/favorites/${dealId}`, { method: "DELETE" });
+      setFavoriteDeals((current) => current.filter((deal) => deal.id !== dealId));
+      showToast("已取消收藏", "success");
+    } catch (error) {
+      showToast(error.message || "取消收藏失败");
+    }
   };
 
   return (
@@ -1479,7 +1414,9 @@ function UserCenter({ userSession, navigate, onLogout, showToast }) {
             </div>
             <span className="result-count">{favoriteDeals.length} 条</span>
           </div>
-          {favoriteDeals.length ? (
+          {loading ? (
+            <div className="user-empty">正在加载用户数据...</div>
+          ) : favoriteDeals.length ? (
             <div className="user-list">
               {favoriteDeals.map((deal) => (
                 <div className="user-list-row" key={deal.id}>
@@ -1561,6 +1498,7 @@ const ADMIN_NAV_ITEMS = [
   { path: "/admin/merchants", label: "商户管理", icon: Users },
   { path: "/admin/reports", label: "举报管理", icon: Flag },
   { path: "/admin/website-filter", label: "网站过滤", icon: ShieldAlert },
+  { path: "/admin/announcements", label: "公告管理", icon: Megaphone },
   { path: "/admin/audit-logs", label: "操作日志", icon: FileText },
   { path: "/admin/mail", label: "邮件配置", icon: Mail },
   { path: "/admin/settings", label: "系统设置", icon: Settings },
@@ -1681,6 +1619,8 @@ function AdminConsole({ path, session, navigate, onLogout, showToast }) {
     page = <AdminReports refreshKey={refreshKey} showToast={showToast} />;
   } else if (path === "/admin/website-filter") {
     page = <AdminWebsiteFilter refreshKey={refreshKey} showToast={showToast} />;
+  } else if (path === "/admin/announcements") {
+    page = <AdminAnnouncements refreshKey={refreshKey} showToast={showToast} />;
   } else if (merchantMatch) {
     page = (
       <AdminMerchantDetail
@@ -1713,9 +1653,6 @@ function AdminConsole({ path, session, navigate, onLogout, showToast }) {
       <aside className={`admin-sidebar ${sidebarOpen ? "is-open" : ""}`}>
         <div className="admin-sidebar-brand">
           <img className="admin-sidebar-logo" src={logoLight} alt="promo-code" />
-          <div>
-            <small>运营控制台</small>
-          </div>
         </div>
         <nav className="admin-nav" aria-label="管理后台导航">
           {ADMIN_NAV_ITEMS.map((item) => {
@@ -1806,6 +1743,9 @@ function getAdminPageMeta(path) {
   if (path.startsWith("/admin/website-filter")) {
     return { title: "网站过滤" };
   }
+  if (path.startsWith("/admin/announcements")) {
+    return { title: "公告管理" };
+  }
   if (path.startsWith("/admin/audit-logs")) {
     return { title: "操作日志" };
   }
@@ -1883,12 +1823,37 @@ function AdminStatusBadge({ status, label }) {
 }
 
 function AdminDashboard({ refreshKey, navigate }) {
-  const deals = getDeals();
-  const accounts = getAccounts();
-  const publishedDeals = deals.filter((deal) => isVisible(deal));
-  const verifiedMerchants = accounts.filter(
-    (account) => getMerchantAdminStatus(account) === "active",
+  const [data, setData] = useState({ deals: [], merchants: [], reports: [] });
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    adminApiRequest("/api/admin/dashboard")
+      .then((nextData) => {
+        if (!cancelled) {
+          setData({
+            deals: Array.isArray(nextData?.deals) ? nextData.deals : [],
+            merchants: Array.isArray(nextData?.merchants) ? nextData.merchants : [],
+            reports: Array.isArray(nextData?.reports) ? nextData.reports : [],
+          });
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [refreshKey]);
+
+  const deals = data.deals;
+  const accounts = data.merchants;
+  const publishedDeals = deals.filter(
+    (deal) => getDealAdminStatus(deal) === "published",
   );
+  const verifiedMerchants = accounts.filter((account) => account.emailVerified);
   const copies = deals.reduce((total, deal) => total + (deal.copyCount || 0), 0);
   const recentDeals = [...deals]
     .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
@@ -1901,16 +1866,16 @@ function AdminDashboard({ refreshKey, navigate }) {
     })
     .slice(0, 5);
   const dailyCounts = Array.from({ length: 7 }, (_, index) => {
-    const date = new Date("2026-09-15T00:00:00");
+    const date = new Date();
+    date.setHours(0, 0, 0, 0);
     date.setDate(date.getDate() - (6 - index));
     const key = date.toISOString().slice(0, 10);
     return {
       label: `${date.getMonth() + 1}/${date.getDate()}`,
-      count: deals.filter((deal) => deal.createdAt === key).length,
+      count: deals.filter((deal) => String(deal.createdAt).slice(0, 10) === key).length,
     };
   });
   const maxDailyCount = Math.max(...dailyCounts.map((item) => item.count), 1);
-  void refreshKey;
 
   return (
     <div className="admin-page">
@@ -1920,6 +1885,12 @@ function AdminDashboard({ refreshKey, navigate }) {
         description="快速查看优惠码目录、商户和内容状态。"
       />
 
+      {loading ? (
+        <AdminPanel title="数据加载中">
+          <div className="admin-empty-state">正在从数据库加载运营数据...</div>
+        </AdminPanel>
+      ) : (
+      <>
       <div className="admin-metric-grid">
         <AdminMetricCard
           icon={Tags}
@@ -1973,7 +1944,7 @@ function AdminDashboard({ refreshKey, navigate }) {
           </div>
         </AdminPanel>
 
-        <AdminPanel title="系统状态" description="当前前端演示环境状态">
+        <AdminPanel title="系统状态" description="当前生产服务状态">
           <div className="admin-health-list">
             <div>
               <span><CheckCircle2 size={16} />公开目录</span>
@@ -1985,7 +1956,7 @@ function AdminDashboard({ refreshKey, navigate }) {
             </div>
             <div>
               <span><Clock3 size={16} />邮件验证</span>
-              <strong>演示模式</strong>
+              <strong>已接入</strong>
             </div>
             <div>
               <span><ShieldAlert size={16} />待处理下架</span>
@@ -2041,6 +2012,8 @@ function AdminDashboard({ refreshKey, navigate }) {
           )}
         </AdminPanel>
       </div>
+      </>
+      )}
     </div>
   );
 }
@@ -2049,11 +2022,28 @@ function AdminPromoCodes({ refreshKey, showToast }) {
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("all");
   const [merchantId, setMerchantId] = useState("all");
-  const [, setVersion] = useState(0);
-  void refreshKey;
+  const [deals, setDeals] = useState([]);
+  const [accounts, setAccounts] = useState([]);
+  const [loading, setLoading] = useState(true);
 
-  const deals = getDeals();
-  const accounts = getAccounts();
+  const reload = () => {
+    setLoading(true);
+    return Promise.all([
+      adminApiRequest("/api/admin/deals"),
+      adminApiRequest("/api/admin/merchants"),
+    ])
+      .then(([dealsData, merchantsData]) => {
+        setDeals(Array.isArray(dealsData?.deals) ? dealsData.deals : []);
+        setAccounts(Array.isArray(merchantsData?.merchants) ? merchantsData.merchants : []);
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    reload();
+  }, [refreshKey]);
+
   const filteredDeals = deals
     .filter((deal) => {
       const normalized = query.trim().toLowerCase();
@@ -2070,66 +2060,32 @@ function AdminPromoCodes({ refreshKey, showToast }) {
     })
     .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
 
-  const reload = () => setVersion((value) => value + 1);
-
-  const removeDeal = (deal) => {
+  const updateDeal = async (deal, nextStatus) => {
     if (!window.confirm(`确认下架优惠码 ${deal.code} 吗？`)) return;
-    const nextDeals = getDeals().map((item) =>
-      item.id === deal.id
-        ? {
-            ...item,
-            adminStatus: "removed",
-            adminRemovalReason: "管理员下架",
-            adminRemovedAt: new Date().toISOString(),
-            adminRemovedBy: SYSTEM_ADMIN_EMAIL,
-          }
-        : item,
-    );
-    writeStorage(DEALS_KEY, nextDeals);
-    writeAuditLog({
-      action: "remove_promo_code",
-      targetType: "promo_code",
-      targetId: deal.id,
-      description: `下架优惠码 ${deal.code}`,
-    });
-    reload();
-    showToast(`优惠码 ${deal.code} 已下架`, "success");
+    try {
+      await adminApiRequest(`/api/admin/deals/${deal.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          adminStatus: nextStatus,
+          reason: nextStatus === "removed" ? "管理员下架" : "",
+        }),
+      });
+      await reload();
+      showToast(`优惠码 ${deal.code} 已${nextStatus === "removed" ? "下架" : "恢复"}`, "success");
+    } catch (error) {
+      showToast(error.message || "优惠码状态更新失败");
+    }
   };
 
-  const restoreDeal = (deal) => {
-    const nextDeals = getDeals().map((item) =>
-      item.id === deal.id
-        ? {
-            ...item,
-            adminStatus: "normal",
-            adminRemovalReason: "",
-            adminRemovedAt: "",
-            adminRemovedBy: "",
-          }
-        : item,
-    );
-    writeStorage(DEALS_KEY, nextDeals);
-    writeAuditLog({
-      action: "restore_promo_code",
-      targetType: "promo_code",
-      targetId: deal.id,
-      description: `恢复优惠码 ${deal.code}`,
-    });
-    reload();
-    showToast(`优惠码 ${deal.code} 已恢复`, "success");
-  };
-
-  const deleteDeal = (deal) => {
+  const deleteDeal = async (deal) => {
     if (!window.confirm(`确认永久删除优惠码 ${deal.code} 吗？此操作不可恢复。`)) return;
-    writeStorage(DEALS_KEY, getDeals().filter((item) => item.id !== deal.id));
-    writeAuditLog({
-      action: "delete_promo_code",
-      targetType: "promo_code",
-      targetId: deal.id,
-      description: `删除优惠码 ${deal.code}`,
-    });
-    reload();
-    showToast(`优惠码 ${deal.code} 已删除`, "success");
+    try {
+      await adminApiRequest(`/api/admin/deals/${deal.id}`, { method: "DELETE" });
+      await reload();
+      showToast(`优惠码 ${deal.code} 已删除`, "success");
+    } catch (error) {
+      showToast(error.message || "优惠码删除失败");
+    }
   };
 
   return (
@@ -2166,7 +2122,9 @@ function AdminPromoCodes({ refreshKey, showToast }) {
           </select>
         </div>
 
-        <div className="admin-table-wrap">
+        {loading ? (
+          <div className="admin-empty-state">正在加载优惠码...</div>
+        ) : <div className="admin-table-wrap">
           <table className="admin-table">
             <thead>
               <tr>
@@ -2216,7 +2174,7 @@ function AdminPromoCodes({ refreshKey, showToast }) {
                             type="button"
                             title="恢复优惠码"
                             aria-label="恢复优惠码"
-                            onClick={() => restoreDeal(deal)}
+                            onClick={() => updateDeal(deal, "normal")}
                           >
                             <CheckCircle2 size={15} />
                           </button>
@@ -2226,7 +2184,7 @@ function AdminPromoCodes({ refreshKey, showToast }) {
                             type="button"
                             title="下架优惠码"
                             aria-label="下架优惠码"
-                            onClick={() => removeDeal(deal)}
+                            onClick={() => updateDeal(deal, "removed")}
                           >
                             <Ban size={15} />
                           </button>
@@ -2248,7 +2206,7 @@ function AdminPromoCodes({ refreshKey, showToast }) {
             </tbody>
           </table>
           {!filteredDeals.length && <AdminEmptyState label="没有符合条件的优惠码" />}
-        </div>
+        </div>}
       </AdminPanel>
     </div>
   );
@@ -2257,9 +2215,21 @@ function AdminPromoCodes({ refreshKey, showToast }) {
 function AdminMerchants({ refreshKey, navigate, showToast }) {
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("all");
-  const [, setVersion] = useState(0);
-  void refreshKey;
-  const accounts = getAccounts();
+  const [accounts, setAccounts] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  const reload = () => {
+    setLoading(true);
+    return adminApiRequest("/api/admin/merchants")
+      .then((data) => setAccounts(Array.isArray(data?.merchants) ? data.merchants : []))
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    reload();
+  }, [refreshKey]);
+
   const filteredAccounts = accounts.filter((account) => {
     const normalized = query.trim().toLowerCase();
     const accountStatus = getMerchantAdminStatus(account);
@@ -2269,28 +2239,19 @@ function AdminMerchants({ refreshKey, navigate, showToast }) {
     return matchesQuery && (status === "all" || accountStatus === status);
   });
 
-  const toggleMerchant = (account) => {
+  const toggleMerchant = async (account) => {
     const currentStatus = getMerchantAdminStatus(account);
     const shouldSuspend = currentStatus !== "suspended";
-    const nextAccounts = getAccounts().map((item) =>
-      item.id === account.id
-        ? {
-            ...item,
-            adminStatus: shouldSuspend ? "suspended" : "normal",
-            adminSuspendedAt: shouldSuspend ? new Date().toISOString() : "",
-            adminSuspendedBy: shouldSuspend ? SYSTEM_ADMIN_EMAIL : "",
-          }
-        : item,
-    );
-    writeStorage(ACCOUNTS_KEY, nextAccounts);
-    writeAuditLog({
-      action: shouldSuspend ? "suspend_merchant" : "resume_merchant",
-      targetType: "merchant",
-      targetId: account.id,
-      description: `${shouldSuspend ? "暂停" : "恢复"}商户 ${account.storeName}`,
-    });
-    setVersion((value) => value + 1);
-    showToast(`商户已${shouldSuspend ? "暂停" : "恢复"}`, "success");
+    try {
+      await adminApiRequest(`/api/admin/merchants/${account.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ status: shouldSuspend ? "suspended" : "active" }),
+      });
+      await reload();
+      showToast(`商户已${shouldSuspend ? "暂停" : "恢复"}`, "success");
+    } catch (error) {
+      showToast(error.message || "商户状态更新失败");
+    }
   };
 
   return (
@@ -2317,7 +2278,9 @@ function AdminMerchants({ refreshKey, navigate, showToast }) {
             <option value="suspended">已暂停</option>
           </select>
         </div>
-        <div className="admin-table-wrap">
+        {loading ? (
+          <div className="admin-empty-state">正在加载商户...</div>
+        ) : <div className="admin-table-wrap">
           <table className="admin-table">
             <thead>
               <tr>
@@ -2334,7 +2297,7 @@ function AdminMerchants({ refreshKey, navigate, showToast }) {
             <tbody>
               {filteredAccounts.map((account) => {
                 const accountStatus = getMerchantAdminStatus(account);
-                const dealCount = getDeals().filter((deal) => deal.ownerEmail === account.email).length;
+                const dealCount = account.dealCount || 0;
                 return (
                   <tr key={account.id}>
                     <td>
@@ -2381,19 +2344,32 @@ function AdminMerchants({ refreshKey, navigate, showToast }) {
             </tbody>
           </table>
           {!filteredAccounts.length && <AdminEmptyState label="暂无符合条件的商户" />}
-        </div>
+        </div>}
       </AdminPanel>
     </div>
   );
 }
 
 function AdminReports({ refreshKey, showToast }) {
-  const [reports, setReports] = useState(getUserReports);
+  const [reports, setReports] = useState([]);
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("all");
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    setReports(getUserReports());
+    let cancelled = false;
+    setLoading(true);
+    adminApiRequest("/api/admin/reports")
+      .then((data) => {
+        if (!cancelled) setReports(Array.isArray(data?.reports) ? data.reports : []);
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [refreshKey]);
 
   const normalizedQuery = query.trim().toLowerCase();
@@ -2409,29 +2385,26 @@ function AdminReports({ refreshKey, showToast }) {
     })
     .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
 
-  const updateReportStatus = (report, nextStatus) => {
-    const nextReports = getUserReports().map((item) =>
-      item.id === report.id
-        ? {
-            ...item,
-            status: nextStatus,
-            handledAt: new Date().toISOString(),
-            handledBy: SYSTEM_ADMIN_EMAIL,
-          }
-        : item,
-    );
-    writeStorage(USER_REPORTS_KEY, nextReports);
-    writeAuditLog({
-      action: nextStatus === "resolved" ? "resolve_report" : "dismiss_report",
-      targetType: "promo_code_report",
-      targetId: report.id,
-      description: `${nextStatus === "resolved" ? "处理" : "忽略"}举报 ${report.code}`,
-    });
-    setReports(nextReports);
-    showToast(
-      nextStatus === "resolved" ? "举报已标记为已处理" : "举报已忽略",
-      "success",
-    );
+  const updateReportStatus = async (report, nextStatus) => {
+    try {
+      await adminApiRequest(`/api/admin/reports/${report.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ status: nextStatus }),
+      });
+      setReports((current) =>
+        current.map((item) =>
+          item.id === report.id
+            ? { ...item, status: nextStatus, handledAt: new Date().toISOString() }
+            : item,
+        ),
+      );
+      showToast(
+        nextStatus === "resolved" ? "举报已标记为已处理" : "举报已忽略",
+        "success",
+      );
+    } catch (error) {
+      showToast(error.message || "举报状态更新失败");
+    }
   };
 
   return (
@@ -2462,7 +2435,9 @@ function AdminReports({ refreshKey, showToast }) {
           </select>
         </div>
 
-        <div className="admin-table-wrap">
+        {loading ? (
+          <div className="admin-empty-state">正在加载举报记录...</div>
+        ) : <div className="admin-table-wrap">
           <table className="admin-table admin-reports-table">
             <thead>
               <tr>
@@ -2535,21 +2510,22 @@ function AdminReports({ refreshKey, showToast }) {
             </tbody>
           </table>
           {!filteredReports.length && <AdminEmptyState label="暂无符合条件的举报记录" />}
-        </div>
+        </div>}
       </AdminPanel>
     </div>
   );
 }
 
 function AdminWebsiteFilter({ refreshKey, showToast }) {
-  const [rules, setRules] = useState(getWebsiteBlacklist);
+  const [rules, setRules] = useState([]);
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("all");
   const [form, setForm] = useState({ website: "", reason: "" });
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    setRules(getWebsiteBlacklist());
+    reload();
   }, [refreshKey]);
 
   const activeRules = rules.filter((rule) => rule.status !== "disabled");
@@ -2567,9 +2543,15 @@ function AdminWebsiteFilter({ refreshKey, showToast }) {
     })
     .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
 
-  const reload = () => setRules(getWebsiteBlacklist());
+  const reload = () => {
+    setLoading(true);
+    return adminApiRequest("/api/admin/website-filters")
+      .then((data) => setRules(Array.isArray(data?.rules) ? data.rules : []))
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  };
 
-  const addRule = (event) => {
+  const addRule = async (event) => {
     event.preventDefault();
     setError("");
 
@@ -2586,7 +2568,7 @@ function AdminWebsiteFilter({ refreshKey, showToast }) {
       return;
     }
 
-    const existingRule = getWebsiteBlacklist().find((rule) => {
+    const existingRule = rules.find((rule) => {
       const existingIsKeyword =
         rule.matchType === "keyword" || (!rule.hostname && rule.keyword);
       return isDomainRule
@@ -2602,65 +2584,47 @@ function AdminWebsiteFilter({ refreshKey, showToast }) {
       return;
     }
 
-    const nextRule = {
-      id: makeId("website-rule"),
-      matchType: isDomainRule ? "domain" : "keyword",
-      hostname: isDomainRule ? hostname : "",
-      keyword: isDomainRule ? "" : keyword,
-      reason: form.reason.trim(),
-      status: "active",
-      createdAt: new Date().toISOString(),
-      createdBy: SYSTEM_ADMIN_EMAIL,
-    };
-    writeStorage(WEBSITE_FILTER_KEY, [nextRule, ...getWebsiteBlacklist()]);
-    writeAuditLog({
-      action: "add_website_blacklist",
-      targetType: "website",
-      targetId: isDomainRule ? hostname : keyword,
-      description: `将${isDomainRule ? "网站域名" : "敏感词"} ${isDomainRule ? hostname : keyword} 加入黑名单`,
-    });
-    setForm({ website: "", reason: "" });
-    reload();
-    showToast(
-      `已将${isDomainRule ? "网站域名" : "敏感词"} ${isDomainRule ? hostname : keyword} 加入黑名单`,
-      "success",
-    );
+    try {
+      await adminApiRequest("/api/admin/website-filters", {
+        method: "POST",
+        body: JSON.stringify({ website: input, reason: form.reason.trim() }),
+      });
+      setForm({ website: "", reason: "" });
+      await reload();
+      showToast(
+        `已将${isDomainRule ? "网站域名" : "敏感词"} ${isDomainRule ? hostname : keyword} 加入黑名单`,
+        "success",
+      );
+    } catch (requestError) {
+      setError(requestError.message || "网站过滤规则保存失败");
+    }
   };
 
-  const toggleRule = (rule) => {
+  const toggleRule = async (rule) => {
     const nextStatus = rule.status === "disabled" ? "active" : "disabled";
     const ruleLabel = getWebsiteRuleLabel(rule);
-    writeStorage(
-      WEBSITE_FILTER_KEY,
-      getWebsiteBlacklist().map((item) =>
-        item.id === rule.id ? { ...item, status: nextStatus } : item,
-      ),
-    );
-    writeAuditLog({
-      action: nextStatus === "active" ? "enable_website_blacklist" : "disable_website_blacklist",
-      targetType: "website",
-      targetId: rule.hostname || rule.keyword,
-      description: `${nextStatus === "active" ? "启用" : "停用"}网站过滤规则 ${ruleLabel}`,
-    });
-    reload();
-    showToast(`${ruleLabel} 已${nextStatus === "active" ? "恢复拦截" : "停用规则"}`, "success");
+    try {
+      await adminApiRequest(`/api/admin/website-filters/${rule.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ status: nextStatus }),
+      });
+      await reload();
+      showToast(`${ruleLabel} 已${nextStatus === "active" ? "恢复拦截" : "停用规则"}`, "success");
+    } catch (error) {
+      showToast(error.message || "网站过滤状态更新失败");
+    }
   };
 
-  const deleteRule = (rule) => {
+  const deleteRule = async (rule) => {
     const ruleLabel = getWebsiteRuleLabel(rule);
     if (!window.confirm(`确认永久删除 ${ruleLabel} 的过滤规则吗？`)) return;
-    writeStorage(
-      WEBSITE_FILTER_KEY,
-      getWebsiteBlacklist().filter((item) => item.id !== rule.id),
-    );
-    writeAuditLog({
-      action: "delete_website_blacklist",
-      targetType: "website",
-      targetId: rule.hostname || rule.keyword,
-      description: `删除网站过滤规则 ${ruleLabel}`,
-    });
-    reload();
-    showToast(`已删除 ${ruleLabel} 的过滤规则`, "success");
+    try {
+      await adminApiRequest(`/api/admin/website-filters/${rule.id}`, { method: "DELETE" });
+      await reload();
+      showToast(`已删除 ${ruleLabel} 的过滤规则`, "success");
+    } catch (error) {
+      showToast(error.message || "网站过滤规则删除失败");
+    }
   };
 
   return (
@@ -2747,7 +2711,9 @@ function AdminWebsiteFilter({ refreshKey, showToast }) {
             <option value="disabled">已停用</option>
           </select>
         </div>
-        <div className="admin-table-wrap">
+        {loading ? (
+          <div className="admin-empty-state">正在加载网站过滤规则...</div>
+        ) : <div className="admin-table-wrap">
           <table className="admin-table website-filter-table">
             <thead>
               <tr>
@@ -2828,15 +2794,43 @@ function AdminWebsiteFilter({ refreshKey, showToast }) {
             </tbody>
           </table>
           {!filteredRules.length && <AdminEmptyState label="暂无符合条件的网站黑名单规则" />}
-        </div>
+        </div>}
       </AdminPanel>
     </div>
   );
 }
 
 function AdminMerchantDetail({ merchantId, refreshKey, navigate, showToast }) {
-  const account = getAccounts().find((item) => item.id === merchantId);
-  void refreshKey;
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    adminApiRequest(`/api/admin/merchants/${merchantId}`)
+      .then((nextData) => {
+        if (!cancelled) setData(nextData);
+      })
+      .catch(() => {
+        if (!cancelled) setData(null);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [merchantId, refreshKey]);
+
+  const account = data?.merchant;
+  const deals = Array.isArray(data?.deals) ? data.deals : [];
+  if (loading) {
+    return (
+      <div className="admin-page">
+        <AdminPageHeader title="商户详情" description="正在加载商户数据..." />
+      </div>
+    );
+  }
   if (!account) {
     return (
       <div className="admin-page">
@@ -2849,30 +2843,18 @@ function AdminMerchantDetail({ merchantId, refreshKey, navigate, showToast }) {
   }
 
   const status = getMerchantAdminStatus(account);
-  const deals = getDeals().filter((deal) => deal.ownerEmail === account.email);
-  const toggleMerchant = () => {
+  const toggleMerchant = async () => {
     const shouldSuspend = status !== "suspended";
-    writeStorage(
-      ACCOUNTS_KEY,
-      getAccounts().map((item) =>
-        item.id === account.id
-          ? {
-              ...item,
-              adminStatus: shouldSuspend ? "suspended" : "normal",
-              adminSuspendedAt: shouldSuspend ? new Date().toISOString() : "",
-              adminSuspendedBy: shouldSuspend ? SYSTEM_ADMIN_EMAIL : "",
-            }
-          : item,
-      ),
-    );
-    writeAuditLog({
-      action: shouldSuspend ? "suspend_merchant" : "resume_merchant",
-      targetType: "merchant",
-      targetId: account.id,
-      description: `${shouldSuspend ? "暂停" : "恢复"}商户 ${account.storeName}`,
-    });
-    showToast(`商户已${shouldSuspend ? "暂停" : "恢复"}`, "success");
-    navigate("/admin/merchants");
+    try {
+      await adminApiRequest(`/api/admin/merchants/${account.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ status: shouldSuspend ? "suspended" : "active" }),
+      });
+      showToast(`商户已${shouldSuspend ? "暂停" : "恢复"}`, "success");
+      navigate("/admin/merchants");
+    } catch (error) {
+      showToast(error.message || "商户状态更新失败");
+    }
   };
 
   return (
@@ -2938,10 +2920,255 @@ function AdminMerchantDetail({ merchantId, refreshKey, navigate, showToast }) {
   );
 }
 
+function AdminAnnouncements({ refreshKey, showToast }) {
+  const [form, setForm] = useState(DEFAULT_ANNOUNCEMENT);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError("");
+
+    adminApiRequest("/api/admin/announcement")
+      .then((data) => {
+        if (cancelled) return;
+        const nextAnnouncement = normalizeAnnouncement(
+          data?.announcement || data?.data?.announcement || data?.data || data,
+        );
+        setForm(nextAnnouncement);
+      })
+      .catch((requestError) => {
+        if (cancelled) return;
+        setError(requestError.message || "公告配置加载失败");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [refreshKey]);
+
+  const updateField = (field, value) => {
+    setForm((current) => ({ ...current, [field]: value }));
+  };
+
+  const saveAnnouncement = async (event) => {
+    event.preventDefault();
+    setError("");
+
+    const content = form.content.trim();
+    if (form.enabled && !content) {
+      setError("启用公告前请填写公告内容");
+      return;
+    }
+    if (content.length > 200) {
+      setError("公告内容不能超过 200 个字符");
+      return;
+    }
+    if (form.link.trim()) {
+      try {
+        const parsed = new URL(form.link.trim());
+        if (!["http:", "https:"].includes(parsed.protocol)) throw new Error();
+      } catch {
+        setError("跳转链接必须是有效的 HTTP 或 HTTPS 地址");
+        return;
+      }
+    }
+    if (form.startsAt && form.endsAt && form.startsAt > form.endsAt) {
+      setError("结束日期不能早于开始日期");
+      return;
+    }
+
+    const nextAnnouncement = normalizeAnnouncement({
+      ...form,
+      content,
+      link: form.link.trim(),
+      updatedAt: new Date().toISOString(),
+      updatedBy: form.updatedBy || "",
+    });
+
+    setSaving(true);
+    try {
+      const data = await adminApiRequest("/api/admin/announcement", {
+        method: "PATCH",
+        body: JSON.stringify(nextAnnouncement),
+      });
+      const savedAnnouncement = normalizeAnnouncement(
+        data?.announcement || data?.data?.announcement || data?.data || data,
+      );
+      setForm(savedAnnouncement);
+      showToast("公告已保存", "success");
+    } catch (requestError) {
+      setError(requestError.message || "公告保存失败");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const previewAnnouncement = normalizeAnnouncement(form);
+
+  return (
+    <div className="admin-page">
+      <AdminPageHeader
+        eyebrow="内容管理"
+        title="公告管理"
+        description="创建一条全站公告，展示在公开站点登录和注册工具栏上方。"
+        action={
+          <span className={`admin-announcement-state ${isAnnouncementActive(previewAnnouncement) ? "active" : ""}`}>
+            <span />
+            {isAnnouncementActive(previewAnnouncement) ? "前台展示中" : "当前未展示"}
+          </span>
+        }
+      />
+
+      {error && <p className="admin-page-error" role="alert">{error}</p>}
+
+      {loading ? (
+        <AdminPanel title="公告配置">
+          <div className="admin-empty-state">正在加载公告配置...</div>
+        </AdminPanel>
+      ) : (
+        <form className="admin-announcement-layout" onSubmit={saveAnnouncement}>
+          <AdminPanel
+            title="公告内容"
+            description="建议控制在一行内，最多 200 个字符。"
+          >
+            <div className="admin-setting-fields">
+              <label className="admin-field">
+                <span>公告内容</span>
+                <textarea
+                  className="admin-textarea"
+                  value={form.content}
+                  maxLength={200}
+                  placeholder="例如：平台将于今晚 22:00 进行短暂维护。"
+                  onChange={(event) => updateField("content", event.target.value)}
+                />
+                <small className="admin-field-hint">{form.content.length}/200</small>
+              </label>
+              <label className="admin-field">
+                <span>跳转链接（可选）</span>
+                <input
+                  type="url"
+                  value={form.link}
+                  placeholder="https://example.com/notice"
+                  onChange={(event) => updateField("link", event.target.value)}
+                />
+              </label>
+              <label className="admin-field">
+                <span>公告级别</span>
+                <select
+                  value={form.level}
+                  onChange={(event) => updateField("level", event.target.value)}
+                >
+                  <option value="normal">普通公告</option>
+                  <option value="important">重要公告</option>
+                  <option value="risk">风险提示</option>
+                </select>
+              </label>
+            </div>
+          </AdminPanel>
+
+          <AdminPanel
+            title="展示规则"
+            description="不填写日期表示立即生效或长期展示。"
+          >
+            <div className="admin-setting-fields">
+              <label className="admin-toggle-row admin-announcement-toggle">
+                <span>
+                  <strong>启用公告</strong>
+                  <small>启用后，符合日期条件的公告会显示在公开站点。</small>
+                </span>
+                <input
+                  type="checkbox"
+                  checked={form.enabled}
+                  onChange={(event) => updateField("enabled", event.target.checked)}
+                />
+              </label>
+              <div className="admin-announcement-date-grid">
+                <label className="admin-field">
+                  <span>开始日期</span>
+                  <input
+                    type="date"
+                    value={form.startsAt}
+                    onChange={(event) => updateField("startsAt", event.target.value)}
+                  />
+                </label>
+                <label className="admin-field">
+                  <span>结束日期</span>
+                  <input
+                    type="date"
+                    value={form.endsAt}
+                    onChange={(event) => updateField("endsAt", event.target.value)}
+                  />
+                </label>
+              </div>
+              <div className="admin-announcement-rule-note">
+                <Megaphone size={16} />
+                 <span>用户关闭公告后仅在当前页面隐藏；更新公告内容后会重新显示。</span>
+              </div>
+            </div>
+          </AdminPanel>
+
+          <AdminPanel
+            title="前台预览"
+            description="预览当前表单内容，不代表已经保存。"
+            className="admin-announcement-preview-panel"
+          >
+            <div className={`announcement-bar announcement-${previewAnnouncement.level} admin-announcement-preview`}>
+              <div className="announcement-inner">
+                <div className="announcement-copy">
+                  <Megaphone size={15} />
+                  <span className="announcement-label">
+                    {previewAnnouncement.level === "risk"
+                      ? "风险提示"
+                      : previewAnnouncement.level === "important"
+                        ? "重要公告"
+                        : "公告"}
+                  </span>
+                  <span>{previewAnnouncement.content || "这里显示公告内容"}</span>
+                </div>
+              </div>
+            </div>
+          </AdminPanel>
+
+          <div className="admin-settings-footer">
+            <button className="admin-primary-button" type="submit" disabled={saving}>
+              {saving ? "保存中..." : "保存公告"}
+              <Check size={16} />
+            </button>
+          </div>
+        </form>
+      )}
+    </div>
+  );
+}
+
 function AdminAuditLogs({ refreshKey }) {
   const [query, setQuery] = useState("");
-  void refreshKey;
-  const logs = getAdminLogs().filter((log) => {
+  const [logs, setLogs] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    adminApiRequest("/api/admin/audit-logs")
+      .then((data) => {
+        if (!cancelled) setLogs(Array.isArray(data?.logs) ? data.logs : []);
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [refreshKey]);
+
+  const filteredLogs = logs.filter((log) => {
     const normalized = query.trim().toLowerCase();
     return (
       !normalized ||
@@ -2970,13 +3197,15 @@ function AdminAuditLogs({ refreshKey }) {
             />
           </label>
         </div>
-        <div className="admin-table-wrap">
+        {loading ? (
+          <div className="admin-empty-state">正在加载操作日志...</div>
+        ) : <div className="admin-table-wrap">
           <table className="admin-table">
             <thead>
               <tr><th>时间</th><th>管理员</th><th>操作</th><th>目标</th><th>说明</th></tr>
             </thead>
             <tbody>
-              {logs.map((log) => (
+              {filteredLogs.map((log) => (
                 <tr key={log.id}>
                   <td>{formatAdminDate(log.createdAt)}</td>
                   <td>{log.adminEmail}</td>
@@ -2987,8 +3216,8 @@ function AdminAuditLogs({ refreshKey }) {
               ))}
             </tbody>
           </table>
-          {!logs.length && <AdminEmptyState label="暂无操作日志" />}
-        </div>
+          {!filteredLogs.length && <AdminEmptyState label="暂无操作日志" />}
+        </div>}
       </AdminPanel>
     </div>
   );
@@ -3232,11 +3461,29 @@ function AdminMailSettings({ refreshKey, showToast }) {
 }
 
 function AdminSettings({ session, showToast }) {
-  const [settings, setSettings] = useState(getAdminSettings);
+  const [settings, setSettings] = useState(DEFAULT_ADMIN_SETTINGS);
   const [password, setPassword] = useState("");
   const [passwordConfirm, setPasswordConfirm] = useState("");
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    adminApiRequest("/api/admin/settings")
+      .then((data) => {
+        if (cancelled) return;
+        const nextSettings = {
+          ...DEFAULT_ADMIN_SETTINGS,
+          ...(data?.settings || data?.data?.settings || data?.data || data),
+        };
+        setSettings(nextSettings);
+      })
+      .catch(() => {});
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const saveSettings = async (event) => {
     event.preventDefault();
@@ -3252,16 +3499,35 @@ function AdminSettings({ session, showToast }) {
       }
     }
 
+    const nextSettings = {
+      ...settings,
+      merchantDealTotalLimit: normalizeLimitValue(
+        settings.merchantDealTotalLimit,
+        DEFAULT_ADMIN_SETTINGS.merchantDealTotalLimit,
+      ),
+      merchantDealPublicLimit: normalizeLimitValue(
+        settings.merchantDealPublicLimit,
+        DEFAULT_ADMIN_SETTINGS.merchantDealPublicLimit,
+      ),
+      merchantDealDailyLimit: normalizeLimitValue(
+        settings.merchantDealDailyLimit,
+        DEFAULT_ADMIN_SETTINGS.merchantDealDailyLimit,
+      ),
+      preventDuplicateMerchantCodes: settings.preventDuplicateMerchantCodes !== false,
+      showGithubLink: settings.showGithubLink !== false,
+      githubUrl: GITHUB_REPOSITORY_URL,
+    };
+
     setSaving(true);
     try {
       await adminApiRequest("/api/admin/settings", {
         method: "PATCH",
         body: JSON.stringify({
-          ...settings,
+          ...nextSettings,
           ...(password ? { password } : {}),
         }),
       });
-      writeStorage(ADMIN_SETTINGS_KEY, settings);
+      setSettings(nextSettings);
       setPassword("");
       setPasswordConfirm("");
       showToast("系统设置已保存", "success");
@@ -3270,6 +3536,13 @@ function AdminSettings({ session, showToast }) {
     } finally {
       setSaving(false);
     }
+  };
+
+  const updateLimitSetting = (field, value) => {
+    setSettings({
+      ...settings,
+      [field]: normalizeLimitValue(value, DEFAULT_ADMIN_SETTINGS[field]),
+    });
   };
 
   return (
@@ -3297,6 +3570,87 @@ function AdminSettings({ session, showToast }) {
           <div className="admin-setting-status">
             <span className="admin-system-dot" />
             公开站点状态：{settings.siteStatus}
+          </div>
+        </AdminPanel>
+        <AdminPanel title="站点信息" description="管理公开站点顶部的项目入口和版本信息。">
+          <label className="admin-toggle-row">
+            <span>
+              <strong>显示 GitHub 仓库入口</strong>
+              <small>关闭后，公开站点顶部将隐藏 GitHub 图标。</small>
+            </span>
+            <input
+              type="checkbox"
+              checked={settings.showGithubLink !== false}
+              onChange={(event) =>
+                setSettings({ ...settings, showGithubLink: event.target.checked })
+              }
+            />
+          </label>
+          <div className="admin-setting-fields admin-site-info-fields">
+            <label className="admin-field">
+              <span>GitHub 仓库地址</span>
+              <input value={GITHUB_REPOSITORY_URL} readOnly />
+            </label>
+            <label className="admin-field">
+              <span>当前版本</span>
+              <input value={`v${APP_VERSION}`} readOnly />
+            </label>
+          </div>
+        </AdminPanel>
+        <AdminPanel
+          title="商户发布限制"
+          description="控制单个商户可保留和公开展示的优惠码数量。"
+        >
+          <div className="admin-setting-fields">
+            <label className="admin-field">
+              <span>累计优惠码上限</span>
+              <input
+                type="number"
+                min="0"
+                value={settings.merchantDealTotalLimit}
+                onChange={(event) =>
+                  updateLimitSetting("merchantDealTotalLimit", event.target.value)
+                }
+              />
+            </label>
+            <label className="admin-field">
+              <span>公开展示上限</span>
+              <input
+                type="number"
+                min="0"
+                value={settings.merchantDealPublicLimit}
+                onChange={(event) =>
+                  updateLimitSetting("merchantDealPublicLimit", event.target.value)
+                }
+              />
+            </label>
+            <label className="admin-field">
+              <span>每日新增上限</span>
+              <input
+                type="number"
+                min="0"
+                value={settings.merchantDealDailyLimit}
+                onChange={(event) =>
+                  updateLimitSetting("merchantDealDailyLimit", event.target.value)
+                }
+              />
+            </label>
+            <label className="admin-toggle-row admin-setting-inline-toggle">
+              <span>
+                <strong>禁止同商户重复优惠码</strong>
+                <small>同一商户下，相同 code 只能保留一条。</small>
+              </span>
+              <input
+                type="checkbox"
+                checked={settings.preventDuplicateMerchantCodes !== false}
+                onChange={(event) =>
+                  setSettings({
+                    ...settings,
+                    preventDuplicateMerchantCodes: event.target.checked,
+                  })
+                }
+              />
+            </label>
           </div>
         </AdminPanel>
         <AdminPanel title="管理员密码">
@@ -3353,13 +3707,11 @@ function MerchantRegister({ navigate, showToast }) {
   });
   const [error, setError] = useState("");
 
-  const submit = (event) => {
+  const [submitting, setSubmitting] = useState(false);
+
+  const submit = async (event) => {
     event.preventDefault();
     setError("");
-    if (!getAdminSettings().allowMerchantRegistration) {
-      setError("平台暂时关闭了商户注册，请稍后再试");
-      return;
-    }
     const email = form.email.trim().toLowerCase();
     if (!email || !form.password) {
       setError("请填写完整信息");
@@ -3369,24 +3721,24 @@ function MerchantRegister({ navigate, showToast }) {
       setError("密码至少需要 8 位");
       return;
     }
-    const accounts = getAccounts();
-    if (accounts.some((account) => account.email === email)) {
-      setError("这个邮箱已经注册，请直接登录");
-      return;
+    setSubmitting(true);
+    try {
+      const data = await apiRequest("/api/auth/merchant/register", {
+        method: "POST",
+        body: JSON.stringify({ email, password: form.password }),
+      });
+      showToast(data?.message || "注册成功，请先完成邮箱验证", "success");
+      const verificationUrl = data?.verificationUrl;
+      navigate(
+        verificationUrl
+          ? new URL(verificationUrl).pathname + new URL(verificationUrl).search
+          : `/merchant/verify?email=${encodeURIComponent(email)}`,
+      );
+    } catch (requestError) {
+      setError(requestError.message || "注册失败");
+    } finally {
+      setSubmitting(false);
     }
-    const account = {
-      id: makeId("merchant"),
-      email,
-      password: form.password,
-      storeName: "",
-      website: "",
-      emailVerified: false,
-      status: "pending_verification",
-      createdAt: "2026-09-15",
-    };
-    writeStorage(ACCOUNTS_KEY, [...accounts, account]);
-    showToast("注册成功，请先完成邮箱验证", "success");
-    navigate(`/merchant/verify?email=${encodeURIComponent(email)}`);
   };
 
   return (
@@ -3412,8 +3764,8 @@ function MerchantRegister({ navigate, showToast }) {
           onChange={(value) => setForm({ ...form, password: value })}
         />
         {error && <p className="form-error">{error}</p>}
-        <button className="primary-button full-width" type="submit">
-          创建商户账号
+        <button className="primary-button full-width" type="submit" disabled={submitting}>
+          {submitting ? "注册中..." : "创建商户账号"}
           <ArrowUpRight size={16} />
         </button>
         <p className="auth-switch">
@@ -3432,26 +3784,24 @@ function MerchantLogin({ navigate, onLogin, showToast }) {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
 
-  const submit = (event) => {
+  const [submitting, setSubmitting] = useState(false);
+
+  const submit = async (event) => {
     event.preventDefault();
-    const account = getAccounts().find(
-      (item) => item.email === email.trim().toLowerCase() && item.password === password,
-    );
-    if (!account) {
-      setError("邮箱或密码不正确");
-      return;
+    setError("");
+    setSubmitting(true);
+    try {
+      const data = await apiRequest("/api/auth/merchant/login", {
+        method: "POST",
+        body: JSON.stringify({ email: email.trim().toLowerCase(), password }),
+      });
+      showToast("登录成功", "success");
+      onLogin(data?.merchant || data?.data?.merchant || data?.data);
+    } catch (requestError) {
+      setError(requestError.message || "邮箱或密码不正确");
+    } finally {
+      setSubmitting(false);
     }
-    if (!account.emailVerified) {
-      setError("请先完成邮箱验证");
-      navigate(`/merchant/verify?email=${encodeURIComponent(account.email)}`);
-      return;
-    }
-    if (account.status === "suspended") {
-      setError("该商户账号已暂停");
-      return;
-    }
-    showToast("登录成功", "success");
-    onLogin(account);
   };
 
   return (
@@ -3477,8 +3827,8 @@ function MerchantLogin({ navigate, onLogin, showToast }) {
           onChange={setPassword}
         />
         {error && <p className="form-error">{error}</p>}
-        <button className="primary-button full-width" type="submit">
-          登录商户中心
+        <button className="primary-button full-width" type="submit" disabled={submitting}>
+          {submitting ? "登录中..." : "登录商户中心"}
           <LogIn size={16} />
         </button>
         <p className="auth-switch">
@@ -3493,25 +3843,27 @@ function MerchantLogin({ navigate, onLogin, showToast }) {
 }
 
 function MerchantVerify({ navigate, onLogin, showToast }) {
-  const email = new URLSearchParams(window.location.search).get("email") || "";
+  const params = new URLSearchParams(window.location.search);
+  const token = params.get("token") || "";
+  const email = params.get("email") || "";
   const [message, setMessage] = useState("");
+  const [submitting, setSubmitting] = useState(false);
 
-  const verify = () => {
-    const accounts = getAccounts();
-    const index = accounts.findIndex((account) => account.email === email);
-    if (index < 0) {
-      setMessage("没有找到对应的注册信息，请重新注册。");
+  const verify = async () => {
+    if (!token) {
+      setMessage("验证链接无效，请从验证邮件进入。");
       return;
     }
-    const updated = {
-      ...accounts[index],
-      emailVerified: true,
-      status: "active",
-    };
-    accounts[index] = updated;
-    writeStorage(ACCOUNTS_KEY, accounts);
-    showToast("邮箱验证成功", "success");
-    onLogin(updated);
+    setSubmitting(true);
+    try {
+      const data = await apiRequest(`/api/auth/merchant/verify?token=${encodeURIComponent(token)}`);
+      showToast("邮箱验证成功", "success");
+      onLogin(data?.merchant || data?.data?.merchant || data?.data);
+    } catch (requestError) {
+      setMessage(requestError.message || "邮箱验证失败");
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -3519,9 +3871,11 @@ function MerchantVerify({ navigate, onLogin, showToast }) {
       eyebrow="邮箱验证"
       title="验证你的邮箱"
       description={
-        email
-          ? `验证 ${email} 后即可发布优惠码。`
-          : "请从验证邮件进入此页面。"
+        token
+          ? "点击下方按钮完成邮箱验证。"
+          : email
+            ? `验证邮件已发送到 ${email}，请点击邮件中的链接。`
+            : "请从验证邮件进入此页面。"
       }
       navigate={navigate}
     >
@@ -3529,12 +3883,14 @@ function MerchantVerify({ navigate, onLogin, showToast }) {
         <div className="verify-icon">
           <Mail size={22} />
         </div>
-        <p>开发预览中，点击下方按钮模拟完成邮箱验证。</p>
+        <p>{token ? "验证成功后会自动登录并进入优惠码发布页面。" : "完成验证后即可登录并发布优惠码。"}</p>
         {message && <p className="form-error">{message}</p>}
-        <button className="primary-button full-width" type="button" onClick={verify}>
-          模拟验证邮箱
-          <Check size={16} />
-        </button>
+        {token && (
+          <button className="primary-button full-width" type="button" onClick={verify} disabled={submitting}>
+            {submitting ? "验证中..." : "验证邮箱"}
+            <Check size={16} />
+          </button>
+        )}
         <button className="text-button full-width" type="button" onClick={() => navigate("/merchant/login")}>
           返回登录
         </button>
@@ -3544,18 +3900,42 @@ function MerchantVerify({ navigate, onLogin, showToast }) {
 }
 
 function MerchantDashboard({ session, navigate, showToast }) {
-  const account = getAccounts().find((item) => item.id === session.accountId);
-  const [deals, setDeals] = useState(() =>
-    getDeals().filter((deal) => deal.ownerEmail === session.email),
-  );
+  const [account, setAccount] = useState({
+    id: session.accountId,
+    email: session.email,
+    storeName: session.storeName || "",
+    website: "",
+  });
+  const [deals, setDeals] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(() => createEmptyDealForm(account));
 
   const refresh = () => {
-    setDeals(getDeals().filter((deal) => deal.ownerEmail === session.email));
+    setLoading(true);
+    return apiRequest("/api/merchant/deals")
+      .then((data) => {
+        const merchant = data?.merchant;
+        if (merchant) {
+          setAccount(merchant);
+          setForm((current) => ({
+            ...current,
+            storeName: current.storeName || merchant.storeName || "",
+            website: current.website || merchant.website || "",
+          }));
+        }
+        setDeals(Array.isArray(data?.deals) ? data.deals : []);
+      })
+      .catch((error) => showToast(error.message || "优惠码加载失败"))
+      .finally(() => setLoading(false));
   };
 
-  const submit = (event) => {
+  useEffect(() => {
+    refresh();
+  }, [session.accountId]);
+
+  const submit = async (event) => {
     event.preventDefault();
     const storeName = form.storeName.trim();
     const website = form.website.trim();
@@ -3570,60 +3950,36 @@ function MerchantDashboard({ session, navigate, showToast }) {
       showToast("官网地址必须是 HTTPS 地址，例如 https://example.com");
       return;
     }
-    if (findWebsiteBlacklistMatch(website)) {
-      showToast("该官网地址已被列入网站黑名单，暂不支持发布");
-      return;
-    }
-    const allDeals = getDeals();
-    const duplicate = allDeals.some(
-      (deal) =>
-        deal.ownerEmail === session.email &&
-        deal.code.toLowerCase() === form.code.trim().toLowerCase() &&
-        deal.id !== editing,
-    );
-    if (duplicate) {
-      showToast("这个商户已经发布过相同优惠码");
-      return;
-    }
 
-    const accounts = getAccounts();
-    const accountIndex = accounts.findIndex((item) => item.id === account?.id);
-    if (accountIndex < 0) {
-      showToast("商户信息不存在，请重新登录");
-      return;
+    setSubmitting(true);
+    try {
+      const data = await apiRequest(
+        editing ? `/api/merchant/deals/${editing}` : "/api/merchant/deals",
+        {
+          method: editing ? "PUT" : "POST",
+          body: JSON.stringify({
+            storeName,
+            website,
+            code: form.code.trim(),
+            offer: form.offer.trim(),
+            dealType: form.dealType,
+            discountValue: form.discountValue.trim(),
+            terms: form.terms.trim(),
+            endAt: form.endAt || null,
+          }),
+        },
+      );
+      const updatedAccount = data?.merchant || account;
+      setAccount(updatedAccount);
+      setForm(createEmptyDealForm(updatedAccount));
+      setEditing(null);
+      await refresh();
+      showToast(editing ? "优惠码已更新" : "优惠码已发布", "success");
+    } catch (error) {
+      showToast(error.message || "优惠码保存失败");
+    } finally {
+      setSubmitting(false);
     }
-    const updatedAccount = {
-      ...accounts[accountIndex],
-      storeName,
-      website,
-    };
-    accounts[accountIndex] = updatedAccount;
-    writeStorage(ACCOUNTS_KEY, accounts);
-
-    const nextDeal = {
-      id: editing || makeId("deal"),
-      storeName,
-      website,
-      code: form.code.trim().toUpperCase(),
-      offer: form.offer.trim(),
-      dealType: form.dealType,
-      discountValue: form.discountValue.trim(),
-      terms: form.terms.trim(),
-      endAt: form.endAt,
-      status: "published",
-      createdAt: editing
-        ? allDeals.find((deal) => deal.id === editing)?.createdAt || "2026-09-15"
-        : "2026-09-15",
-      ownerEmail: session.email,
-    };
-    const nextDeals = editing
-      ? allDeals.map((deal) => (deal.id === editing ? nextDeal : deal))
-      : [...allDeals, nextDeal];
-    writeStorage(DEALS_KEY, nextDeals);
-    setForm(createEmptyDealForm(updatedAccount));
-    setEditing(null);
-    refresh();
-    showToast(editing ? "优惠码已更新" : "优惠码已发布", "success");
   };
 
   const editDeal = (deal) => {
@@ -3641,15 +3997,14 @@ function MerchantDashboard({ session, navigate, showToast }) {
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
-  const toggleDeal = (id) => {
-    const allDeals = getDeals();
-    const nextDeals = allDeals.map((deal) => {
-      if (deal.id !== id || deal.ownerEmail !== session.email) return deal;
-      return { ...deal, status: deal.status === "paused" ? "published" : "paused" };
-    });
-    writeStorage(DEALS_KEY, nextDeals);
-    refresh();
-    showToast("优惠码状态已更新", "success");
+  const toggleDeal = async (id) => {
+    try {
+      await apiRequest(`/api/merchant/deals/${id}/toggle`, { method: "POST" });
+      await refresh();
+      showToast("优惠码状态已更新", "success");
+    } catch (error) {
+      showToast(error.message || "优惠码状态更新失败");
+    }
   };
 
   return (
@@ -3749,8 +4104,8 @@ function MerchantDashboard({ session, navigate, showToast }) {
               <span className="form-hint">
                 发布商户：{form.website || "请填写 HTTPS 官网地址"}
               </span>
-              <button className="primary-button" type="submit">
-                {editing ? "保存修改" : "立即发布"}
+              <button className="primary-button" type="submit" disabled={submitting}>
+                {submitting ? "保存中..." : editing ? "保存修改" : "立即发布"}
                 <Plus size={16} />
               </button>
             </div>
@@ -3765,7 +4120,9 @@ function MerchantDashboard({ session, navigate, showToast }) {
             </div>
             <span className="result-count">{deals.length} 条</span>
           </div>
-          {deals.length === 0 ? (
+          {loading ? (
+            <div className="merchant-empty">正在加载优惠码...</div>
+          ) : deals.length === 0 ? (
             <div className="merchant-empty">还没有优惠码，先发布第一条吧。</div>
           ) : (
             <div className="merchant-deal-list">
@@ -3880,5 +4237,4 @@ function SiteFooter() {
   );
 }
 
-clearProductionDemoStorage();
 createRoot(document.getElementById("root")).render(<App />);
