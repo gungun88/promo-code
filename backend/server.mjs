@@ -7,12 +7,18 @@ const PORT = Number(process.env.API_PORT || 8000);
 const NODE_ENV = process.env.NODE_ENV || "development";
 const SESSION_TTL_SECONDS = 8 * 60 * 60;
 const MAX_BODY_BYTES = 1_048_576;
-const ADMIN_EMAIL = String(process.env.ADMIN_EMAIL || "").trim().toLowerCase();
-const ADMIN_PASSWORD = String(process.env.ADMIN_PASSWORD || "");
+const ADMIN_EMAIL = String(
+  process.env.ADMIN_EMAIL || (NODE_ENV === "production" ? "" : "admin@promo-code.local"),
+)
+  .trim()
+  .toLowerCase();
+const ADMIN_PASSWORD = String(
+  process.env.ADMIN_PASSWORD || (NODE_ENV === "production" ? "" : "admin123456"),
+);
 const MAIL_DRIVER = String(
   process.env.MAIL_DRIVER || (NODE_ENV === "production" ? "smtp" : "log"),
 ).trim().toLowerCase();
-const GITHUB_REPOSITORY_URL = "https://github.com/gungun88/promo-code";
+const GITHUB_REPOSITORY_URL = "https://github.com/lowseekai/promo-code";
 const FRONTEND_ORIGINS = new Set(
   (process.env.FRONTEND_ORIGINS || "http://localhost:5173,http://127.0.0.1:5173")
     .split(",")
@@ -536,6 +542,39 @@ async function ensureAdmin() {
      VALUES ($1, $2, $3, $4)`,
     [ADMIN_EMAIL, "平台管理员", record.hash, record.salt],
   );
+}
+
+async function ensureDevelopmentAccounts() {
+  if (NODE_ENV === "production") return;
+
+  const userEmail = "user@promo-code.local";
+  const userExists = await query("SELECT id FROM users WHERE email = $1", [userEmail]);
+  if (!userExists.rowCount) {
+    const record = createPasswordRecord("user123456");
+    await query(
+      `INSERT INTO users (email, password_hash, password_salt)
+       VALUES ($1, $2, $3)`,
+      [userEmail, record.hash, record.salt],
+    );
+  }
+
+  const merchantEmail = "merchant@promo-code.local";
+  const merchantExists = await query("SELECT id FROM merchants WHERE email = $1", [merchantEmail]);
+  if (!merchantExists.rowCount) {
+    const record = createPasswordRecord("merchant123456");
+    await query(
+      `INSERT INTO merchants
+        (email, password_hash, password_salt, store_name, website, email_verified, status)
+       VALUES ($1, $2, $3, $4, $5, true, 'active')`,
+      [
+        merchantEmail,
+        record.hash,
+        record.salt,
+        "本地测试商户",
+        "https://example.com",
+      ],
+    );
+  }
 }
 
 async function getPublicDeals(url, request) {
@@ -1232,7 +1271,10 @@ async function handleRequest(request, response) {
     return;
   }
 
-  if (request.method === "PATCH" && path === "/api/admin/announcement") {
+  const isAdminAnnouncementPath =
+    path === "/api/admin/announcement" || path === "/api/admin/announcements";
+
+  if (request.method === "PATCH" && isAdminAnnouncementPath) {
     const body = await readBody(request);
     const announcement = normalizeAnnouncement({
       ...body,
@@ -1257,7 +1299,7 @@ async function handleRequest(request, response) {
     return;
   }
 
-  if (request.method === "GET" && path === "/api/admin/announcement") {
+  if (request.method === "GET" && isAdminAnnouncementPath) {
     sendJson(
       response,
       200,
@@ -1604,6 +1646,7 @@ async function handleRequest(request, response) {
 
 await initDatabase();
 await ensureAdmin();
+await ensureDevelopmentAccounts();
 
 const server = createServer((request, response) => {
   handleRequest(request, response).catch((error) => {

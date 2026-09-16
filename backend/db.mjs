@@ -5,9 +5,14 @@ import pg from "pg";
 
 const { Pool } = pg;
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const databaseUrl =
+  process.env.DATABASE_URL ||
+  (process.env.NODE_ENV === "production"
+    ? ""
+    : "postgresql://promo_code:promo-code-local-password@127.0.0.1:5432/promo_code");
 
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
+  connectionString: databaseUrl,
   max: Number(process.env.DATABASE_POOL_SIZE || 10),
   idleTimeoutMillis: 30_000,
 });

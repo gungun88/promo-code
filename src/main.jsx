@@ -48,7 +48,7 @@ import "./styles.css";
 const PUBLIC_DEALS_BATCH_SIZE = 20;
 const ADMIN_TABLE_PAGE_SIZE = 50;
 const APP_VERSION = packageJson.version;
-const GITHUB_REPOSITORY_URL = "https://github.com/gungun88/promo-code";
+const GITHUB_REPOSITORY_URL = "https://github.com/lowseekai/promo-code";
 const API_BASE_URL = (
   import.meta.env.VITE_API_BASE_URL || (import.meta.env.DEV ? "http://localhost:8000" : "")
 ).replace(/\/$/, "");
