@@ -1219,7 +1219,7 @@ select {
   right: 24px;
   top: 24px !important;
   bottom: auto !important;
-  z-index: 10;
+  z-index: 100;
   display: flex;
   align-items: center;
   gap: 9px;
