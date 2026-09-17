@@ -1229,7 +1229,7 @@ async function handleRequest(request, response) {
 
   if (
     request.method === "GET" &&
-    (path === "/api/merchant/deals" || path === "/api/user/deals")
+    path === "/api/user/deals"
   ) {
     const merchant = await getMerchant(request);
     if (!requirePrincipal(merchant, response, request, "请先登录")) return;
@@ -1245,7 +1245,7 @@ async function handleRequest(request, response) {
 
   if (
     request.method === "POST" &&
-    (path === "/api/merchant/deals" || path === "/api/user/deals")
+    path === "/api/user/deals"
   ) {
     const merchant = await getMerchant(request);
     if (!requirePrincipal(merchant, response, request, "请先登录")) return;
@@ -1269,7 +1269,7 @@ async function handleRequest(request, response) {
     const terms = String(body.terms || "").trim();
     const endAt = parseDate(body.endAt);
     if (!storeName || !code || !offer || !Number.isFinite(discountValue) || discountValue < 0) {
-      sendError(response, 400, "请完整填写商户信息和优惠码信息", request);
+      sendError(response, 400, "请完整填写网站信息和优惠码信息", request);
       return;
     }
     if (dealType === "percentage" && discountValue > 100) {
@@ -1289,7 +1289,7 @@ async function handleRequest(request, response) {
           "SELECT * FROM merchants WHERE id = $1 FOR UPDATE",
           [merchant.id],
         );
-        if (!lockedMerchant.rowCount) throw httpError(404, "商户不存在");
+        if (!lockedMerchant.rowCount) throw httpError(404, "发布者资料不存在");
         if (
           lockedMerchant.rows[0].status !== "active" ||
           lockedMerchant.rows[0].admin_status === "suspended"
@@ -1311,13 +1311,13 @@ async function handleRequest(request, response) {
         );
         const count = counts.rows[0];
         if (Number.isFinite(totalLimit) && Number(count.total_count) >= totalLimit) {
-          throw httpError(409, `单个商户最多保留 ${totalLimit} 条优惠码`);
+          throw httpError(409, `单个发布者最多保留 ${totalLimit} 条优惠码`);
         }
         if (Number.isFinite(dailyLimit) && Number(count.daily_count) >= dailyLimit) {
-          throw httpError(409, `单个商户每日最多新增 ${dailyLimit} 条优惠码`);
+          throw httpError(409, `单个发布者每日最多新增 ${dailyLimit} 条优惠码`);
         }
         if (Number.isFinite(publicLimit) && Number(count.public_count) >= publicLimit) {
-          throw httpError(409, `单个商户最多同时公开展示 ${publicLimit} 条优惠码`);
+          throw httpError(409, `单个发布者最多同时公开展示 ${publicLimit} 条优惠码`);
         }
         const merchantResult = await client.query(
           "UPDATE merchants SET store_name = $1, website = $2 WHERE id = $3 RETURNING *",
@@ -1347,13 +1347,13 @@ async function handleRequest(request, response) {
         request,
       );
     } catch (error) {
-      if (error.code === "23505") sendError(response, 409, "这个商户已经发布过相同优惠码", request);
+      if (error.code === "23505") sendError(response, 409, "该发布者已经发布过相同优惠码", request);
       else throw error;
     }
     return;
   }
 
-  const merchantDealMatch = path.match(/^\/api\/(?:merchant|user)\/deals\/([^/]+)$/);
+  const merchantDealMatch = path.match(/^\/api\/user\/deals\/([^/]+)$/);
   if ((request.method === "PUT" || request.method === "PATCH") && merchantDealMatch) {
     const merchant = await getMerchant(request);
     if (!requirePrincipal(merchant, response, request, "请先登录")) return;
@@ -1377,7 +1377,7 @@ async function handleRequest(request, response) {
     const terms = String(body.terms || "").trim();
     const endAt = parseDate(body.endAt);
     if (!storeName || !code || !offer || !Number.isFinite(discountValue) || discountValue < 0) {
-      sendError(response, 400, "请完整填写商户信息和优惠码信息", request);
+      sendError(response, 400, "请完整填写网站信息和优惠码信息", request);
       return;
     }
     if (dealType === "percentage" && discountValue > 100) {
@@ -1420,13 +1420,13 @@ async function handleRequest(request, response) {
         request,
       );
     } catch (error) {
-      if (error.code === "23505") sendError(response, 409, "这个商户已经发布过相同优惠码", request);
+      if (error.code === "23505") sendError(response, 409, "该发布者已经发布过相同优惠码", request);
       else throw error;
     }
     return;
   }
 
-  const merchantToggleMatch = path.match(/^\/api\/(?:merchant|user)\/deals\/([^/]+)\/toggle$/);
+  const merchantToggleMatch = path.match(/^\/api\/user\/deals\/([^/]+)\/toggle$/);
   if (request.method === "POST" && merchantToggleMatch) {
     const merchant = await getMerchant(request);
     if (!requirePrincipal(merchant, response, request, "请先登录")) return;
@@ -1440,7 +1440,7 @@ async function handleRequest(request, response) {
         "SELECT * FROM merchants WHERE id = $1 FOR UPDATE",
         [merchant.id],
       );
-      if (!lockedMerchant.rowCount) throw httpError(404, "商户不存在");
+      if (!lockedMerchant.rowCount) throw httpError(404, "发布者资料不存在");
       if (
         lockedMerchant.rows[0].status !== "active" ||
         lockedMerchant.rows[0].admin_status === "suspended"
@@ -1463,7 +1463,7 @@ async function handleRequest(request, response) {
           [merchant.id],
         );
         if (Number.isFinite(publicLimit) && Number(count.rows[0].public_count) >= publicLimit) {
-          throw httpError(409, `单个商户最多同时公开展示 ${publicLimit} 条优惠码`);
+          throw httpError(409, `单个发布者最多同时公开展示 ${publicLimit} 条优惠码`);
         }
       }
       const updated = await client.query(
@@ -1743,7 +1743,7 @@ async function handleRequest(request, response) {
   if (adminMerchantMatch && request.method === "GET") {
     const merchantResult = await query("SELECT * FROM merchants WHERE id = $1", [adminMerchantMatch[1]]);
     if (!merchantResult.rowCount) {
-      sendError(response, 404, "商户不存在", request);
+      sendError(response, 404, "发布者资料不存在", request);
       return;
     }
     const deals = await query(
@@ -1767,7 +1767,7 @@ async function handleRequest(request, response) {
       [suspended ? "suspended" : "normal", adminMerchantMatch[1]],
     );
     if (!result.rowCount) {
-      sendError(response, 404, "商户不存在", request);
+      sendError(response, 404, "发布者资料不存在", request);
       return;
     }
     await addAuditLog(admin, suspended ? "suspend_merchant" : "resume_merchant", "merchant", adminMerchantMatch[1], "更新商户状态");

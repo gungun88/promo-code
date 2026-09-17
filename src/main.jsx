@@ -50,8 +50,9 @@ const PUBLIC_DEALS_BATCH_SIZE = 20;
 const ADMIN_TABLE_PAGE_SIZE = 50;
 const APP_VERSION = packageJson.version;
 const GITHUB_REPOSITORY_URL = "https://github.com/lowseekai/promo-code";
+const DEV_API_ORIGIN = `http://${globalThis.location?.hostname || "localhost"}:8000`;
 const API_BASE_URL = (
-  import.meta.env.VITE_API_BASE_URL || (import.meta.env.DEV ? "http://localhost:8000" : "")
+  import.meta.env.VITE_API_BASE_URL || (import.meta.env.DEV ? DEV_API_ORIGIN : "")
 ).replace(/\/$/, "");
 const DEFAULT_ADMIN_SETTINGS = {
   allowUserRegistration: true,
@@ -450,7 +451,7 @@ function App() {
     ) : (
       <UserLogin navigate={navigate} onLogin={onUserLogin} />
     );
-  } else if (path === "/create-deal" || path === "/merchant/deals") {
+  } else if (path === "/create-deal") {
     content = userSession ? (
       <MerchantDashboard
         session={userSession}
@@ -1686,7 +1687,7 @@ function AdminRouteRedirect({ navigate }) {
 const ADMIN_NAV_ITEMS = [
   { path: "/admin", label: "数据概览", icon: LayoutDashboard },
   { path: "/admin/promo-codes", label: "优惠码管理", icon: Tags },
-  { path: "/admin/merchants", label: "商户管理", icon: Users },
+  { path: "/admin/merchants", label: "发布者管理", icon: Users },
   { path: "/admin/reports", label: "举报管理", icon: Flag },
   { path: "/admin/website-filter", label: "网站过滤", icon: ShieldAlert },
   { path: "/admin/announcements", label: "公告管理", icon: Megaphone },
@@ -1926,7 +1927,7 @@ function getAdminPageMeta(path) {
     return { title: "优惠码管理" };
   }
   if (path.startsWith("/admin/merchants")) {
-    return { title: "商户管理" };
+    return { title: "发布者管理" };
   }
   if (path.startsWith("/admin/reports")) {
     return { title: "举报管理" };
@@ -2469,26 +2470,26 @@ function AdminMerchants({ refreshKey, navigate, showToast }) {
         body: JSON.stringify({ status: shouldSuspend ? "suspended" : "active" }),
       });
       await reload();
-      showToast(`商户已${shouldSuspend ? "暂停" : "恢复"}`, "success");
+      showToast(`发布者已${shouldSuspend ? "暂停" : "恢复"}`, "success");
     } catch (error) {
-      showToast(error.message || "商户状态更新失败");
+      showToast(error.message || "发布者状态更新失败");
     }
   };
 
   return (
     <div className="admin-page">
       <AdminPageHeader
-        eyebrow="商户管理"
-        title="商户管理"
-        description="查看商户资料、验证状态和其发布的优惠码。"
+        eyebrow="发布者管理"
+        title="发布者管理"
+        description="查看用户创建优惠时填写的网站资料、验证状态和其发布的优惠码。"
       />
-      <AdminPanel title="全部商户" description={`共 ${filteredAccounts.length} 个匹配商户`}>
+      <AdminPanel title="全部发布者" description={`共 ${filteredAccounts.length} 个匹配发布者`}>
         <div className="admin-filter-bar">
           <label className="admin-search-box">
             <Search size={16} />
             <input
               value={query}
-              placeholder="搜索商户名称、邮箱或域名"
+              placeholder="搜索名称、邮箱或域名"
               onChange={(event) => setQuery(event.target.value)}
             />
           </label>
@@ -2500,17 +2501,17 @@ function AdminMerchants({ refreshKey, navigate, showToast }) {
           </select>
         </div>
         {loading ? (
-          <div className="admin-empty-state">正在加载商户...</div>
+          <div className="admin-empty-state">正在加载发布者...</div>
         ) : <div className="admin-table-wrap">
           <table className="admin-table">
             <thead>
               <tr>
-                <th>商户</th>
+                <th>发布者</th>
                 <th>注册邮箱</th>
                 <th>官网</th>
                 <th>邮箱状态</th>
                 <th>优惠码</th>
-                <th>商户状态</th>
+                <th>发布权限</th>
                 <th>注册时间</th>
                 <th>操作</th>
               </tr>
@@ -2542,8 +2543,8 @@ function AdminMerchants({ refreshKey, navigate, showToast }) {
                         <button
                           className="admin-icon-button"
                           type="button"
-                          title="查看商户"
-                          aria-label="查看商户"
+                          title="查看发布者"
+                          aria-label="查看发布者"
                           onClick={() => navigate(`/admin/merchants/${account.id}`)}
                         >
                           <Eye size={15} />
@@ -2551,8 +2552,8 @@ function AdminMerchants({ refreshKey, navigate, showToast }) {
                         <button
                           className={`admin-icon-button ${accountStatus === "suspended" ? "success" : "warning"}`}
                           type="button"
-                          title={accountStatus === "suspended" ? "恢复商户" : "暂停商户"}
-                          aria-label={accountStatus === "suspended" ? "恢复商户" : "暂停商户"}
+                          title={accountStatus === "suspended" ? "恢复发布者" : "暂停发布者"}
+                          aria-label={accountStatus === "suspended" ? "恢复发布者" : "暂停发布者"}
                           onClick={() => toggleMerchant(account)}
                         >
                           {accountStatus === "suspended" ? <Play size={15} /> : <Pause size={15} />}
@@ -3048,16 +3049,16 @@ function AdminMerchantDetail({ merchantId, refreshKey, navigate, showToast }) {
   if (loading) {
     return (
       <div className="admin-page">
-        <AdminPageHeader title="商户详情" description="正在加载商户数据..." />
+        <AdminPageHeader title="发布者详情" description="正在加载发布者数据..." />
       </div>
     );
   }
   if (!account) {
     return (
       <div className="admin-page">
-        <AdminPageHeader title="商户不存在" description="该商户可能已被删除或数据尚未同步。" />
+        <AdminPageHeader title="发布者不存在" description="该发布者可能已被删除或数据尚未同步。" />
         <button className="admin-secondary-button" type="button" onClick={() => navigate("/admin/merchants")}>
-          返回商户列表
+          返回发布者列表
         </button>
       </div>
     );
@@ -3071,10 +3072,10 @@ function AdminMerchantDetail({ merchantId, refreshKey, navigate, showToast }) {
         method: "PATCH",
         body: JSON.stringify({ status: shouldSuspend ? "suspended" : "active" }),
       });
-      showToast(`商户已${shouldSuspend ? "暂停" : "恢复"}`, "success");
+      showToast(`发布者已${shouldSuspend ? "暂停" : "恢复"}`, "success");
       navigate("/admin/merchants");
     } catch (error) {
-      showToast(error.message || "商户状态更新失败");
+      showToast(error.message || "发布者状态更新失败");
     }
   };
 
@@ -3082,10 +3083,10 @@ function AdminMerchantDetail({ merchantId, refreshKey, navigate, showToast }) {
     <div className="admin-page">
       <button className="admin-back-button" type="button" onClick={() => navigate("/admin/merchants")}>
         <ArrowLeft size={15} />
-        返回商户列表
+        返回发布者列表
       </button>
       <AdminPageHeader
-        eyebrow="商户详情"
+        eyebrow="发布者详情"
         title={account.storeName}
         description={account.website}
         action={
@@ -3095,7 +3096,7 @@ function AdminMerchantDetail({ merchantId, refreshKey, navigate, showToast }) {
             onClick={toggleMerchant}
           >
             {status === "suspended" ? <Play size={15} /> : <Pause size={15} />}
-            {status === "suspended" ? "恢复商户" : "暂停商户"}
+            {status === "suspended" ? "恢复发布者" : "暂停发布者"}
           </button>
         }
       />
@@ -3105,7 +3106,7 @@ function AdminMerchantDetail({ merchantId, refreshKey, navigate, showToast }) {
             <div><dt>注册邮箱</dt><dd>{account.email}</dd></div>
             <div><dt>官网地址</dt><dd><a className="admin-table-link" href={account.website} target="_blank" rel="noreferrer">{account.website}</a></dd></div>
             <div><dt>邮箱状态</dt><dd><AdminStatusBadge status={account.emailVerified ? "active" : "pending"} /></dd></div>
-            <div><dt>商户状态</dt><dd><AdminStatusBadge status={status} /></dd></div>
+            <div><dt>发布权限</dt><dd><AdminStatusBadge status={status} /></dd></div>
             <div><dt>注册时间</dt><dd>{formatAdminDate(account.createdAt)}</dd></div>
           </dl>
         </AdminPanel>
@@ -3116,7 +3117,7 @@ function AdminMerchantDetail({ merchantId, refreshKey, navigate, showToast }) {
           </div>
         </AdminPanel>
       </div>
-      <AdminPanel title="商户优惠码" description={`共 ${deals.length} 条记录`}>
+      <AdminPanel title="发布的优惠码" description={`共 ${deals.length} 条记录`}>
         <div className="admin-table-wrap">
           <table className="admin-table">
             <thead>
@@ -3134,7 +3135,7 @@ function AdminMerchantDetail({ merchantId, refreshKey, navigate, showToast }) {
               ))}
             </tbody>
           </table>
-          {!deals.length && <AdminEmptyState label="该商户还没有优惠码" />}
+          {!deals.length && <AdminEmptyState label="该发布者还没有优惠码" />}
         </div>
       </AdminPanel>
     </div>
@@ -4033,7 +4034,7 @@ function MerchantDashboard({ session, navigate, showToast }) {
           <div>
             <p className="eyebrow">用户中心</p>
             <h1>{account?.storeName || form.storeName || session.storeName || "用户中心"}</h1>
-            <p>管理你的优惠码，保存后立即公开展示。</p>
+            <p>管理你创建的优惠码，保存后立即公开展示。</p>
           </div>
         </div>
       </section>
@@ -4043,7 +4044,7 @@ function MerchantDashboard({ session, navigate, showToast }) {
           <div className="section-heading">
             <div>
               <span className="section-kicker">{editing ? "编辑优惠码" : "新增优惠码"}</span>
-              <h2>{editing ? "编辑优惠码" : "发布优惠码"}</h2>
+              <h2>{editing ? "编辑优惠码" : "创建优惠码"}</h2>
             </div>
             {editing && (
               <button
@@ -4121,10 +4122,10 @@ function MerchantDashboard({ session, navigate, showToast }) {
             </div>
             <div className="form-footer">
               <span className="form-hint">
-                发布商户：{form.website || "请填写 HTTPS 官网地址"}
+                官网地址：{form.website || "请填写 HTTPS 官网地址"}
               </span>
               <button className="primary-button" type="submit" disabled={submitting}>
-                {submitting ? "保存中..." : editing ? "保存修改" : "立即发布"}
+                {submitting ? "保存中..." : editing ? "保存修改" : "立即创建"}
                 <Plus size={16} />
               </button>
             </div>
@@ -4135,7 +4136,7 @@ function MerchantDashboard({ session, navigate, showToast }) {
           <div className="section-heading compact">
             <div>
               <span className="section-kicker">我的优惠码</span>
-              <h2>已发布优惠码</h2>
+              <h2>我的优惠码</h2>
             </div>
             <span className="result-count">{deals.length} 条</span>
           </div>

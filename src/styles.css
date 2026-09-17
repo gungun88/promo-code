@@ -871,7 +871,6 @@ select {
   font-size: 14px;
 }
 
-.outline-button,
 .primary-button,
 .icon-text-button {
   display: inline-flex;
@@ -883,17 +882,6 @@ select {
   border-radius: 3px;
   font-size: 13px;
   font-weight: 600;
-}
-
-.outline-button {
-  color: #e9c8d9;
-  background: transparent;
-  border: 1px solid #a65b80;
-}
-
-.outline-button:hover {
-  color: #ffffff;
-  background: rgba(158, 0, 93, 0.26);
 }
 
 .primary-button {
