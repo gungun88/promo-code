@@ -1047,19 +1047,20 @@ function DealRow({ deal, isFavorite, onCopy, onFavorite, onReport }) {
       <td data-label="优惠码">
         <button className="code-button" type="button" onClick={onCopy}>
           <Tag size={12} aria-hidden="true" />
-          <span>{deal.code}</span>
+          <span title={deal.code}>{deal.code}</span>
         </button>
       </td>
       <td data-label="商户">
         <div className="store-cell">
           <FaviconAvatar website={deal.website} fallback={deal.storeName.slice(0, 1)} />
           <div>
-            <strong>{deal.storeName}</strong>
+            <strong title={deal.storeName}>{deal.storeName}</strong>
             <a
               className="store-domain"
               href={deal.website}
               target="_blank"
               rel="noreferrer"
+              title={getWebsiteHostname(deal.website)}
             >
               {getWebsiteHostname(deal.website)}
             </a>
@@ -1068,7 +1069,7 @@ function DealRow({ deal, isFavorite, onCopy, onFavorite, onReport }) {
       </td>
       <td data-label="优惠内容">
         <div className="offer-cell">
-          <strong>{deal.offer}</strong>
+          <strong title={deal.offer}>{deal.offer}</strong>
           <span>{deal.dealType === "percentage" ? "百分比折扣" : "固定金额折扣"}</span>
         </div>
       </td>
@@ -1081,7 +1082,12 @@ function DealRow({ deal, isFavorite, onCopy, onFavorite, onReport }) {
         </div>
       </td>
       <td data-label="使用限制">
-        <span className="terms-cell">{deal.terms || "以商户官网规则为准"}</span>
+        <span
+          className="terms-cell"
+          title={deal.terms || "以商户官网规则为准"}
+        >
+          {deal.terms || "以商户官网规则为准"}
+        </span>
       </td>
       <td data-label="操作">
         <div className="deal-actions">

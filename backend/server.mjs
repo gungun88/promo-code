@@ -293,7 +293,19 @@ async function getOrCreateUserMerchant(client, user, storeName, website) {
     [user.id],
   );
   if (existing.rowCount) {
-    return existing.rows[0];
+    const current = existing.rows[0];
+    if (storeName || website) {
+      const updated = await client.query(
+        `UPDATE merchants
+            SET store_name = COALESCE(NULLIF($1, ''), store_name),
+                website = COALESCE(NULLIF($2, ''), website)
+          WHERE id = $3
+        RETURNING *`,
+        [storeName, website, current.id],
+      );
+      return updated.rows[0];
+    }
+    return current;
   }
 
   const legacy = await client.query(
@@ -671,6 +683,64 @@ async function ensureDevelopmentAccounts() {
   }
   await query("UPDATE users SET email_verified = true WHERE email = $1", [userEmail]);
 
+  const userResult = await query("SELECT * FROM users WHERE email = $1", [userEmail]);
+  const user = userResult.rows[0];
+  await withTransaction(async (client) => {
+    const merchant = await getOrCreateUserMerchant(
+      client,
+      user,
+      "Grammarly",
+      "https://www.grammarly.com",
+    );
+    const demoDeals = [
+      {
+        code: "WELCOME20",
+        offer: "新用户首单 8 折",
+        discountValue: 20,
+        terms: "本地演示数据，仅供查看效果",
+        endAt: "2026-12-31",
+      },
+      {
+        code: "PRO15",
+        offer: "Pro 方案立减 15%",
+        discountValue: 15,
+        terms: "本地演示数据，结算页以官网规则为准",
+        endAt: "2026-11-30",
+      },
+      {
+        code: "STUDENT10",
+        offer: "学生用户额外 9 折",
+        discountValue: 10,
+        terms: "本地演示数据，仅限符合条件的用户",
+        endAt: "2027-01-31",
+      },
+    ];
+
+    for (const deal of demoDeals) {
+      await client.query(
+        `INSERT INTO promo_codes
+          (merchant_id, code, offer, deal_type, discount_value, terms, end_at, status, admin_status)
+         VALUES ($1, $2, $3, 'percentage', $4, $5, $6, 'published', 'normal')
+         ON CONFLICT (merchant_id, lower(code)) DO UPDATE
+           SET offer = EXCLUDED.offer,
+               deal_type = EXCLUDED.deal_type,
+               discount_value = EXCLUDED.discount_value,
+               terms = EXCLUDED.terms,
+               end_at = EXCLUDED.end_at,
+               status = 'published',
+               admin_status = 'normal',
+               admin_removal_reason = ''`,
+        [
+          merchant.id,
+          deal.code,
+          deal.offer,
+          deal.discountValue,
+          deal.terms,
+          deal.endAt,
+        ],
+      );
+    }
+  });
 }
 
 async function getPublicDeals(url, request) {

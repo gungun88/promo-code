@@ -585,6 +585,7 @@ select {
 
 .deal-table th,
 .deal-table td {
+  min-width: 0;
   padding: 14px 16px;
   text-align: left;
   vertical-align: middle;
@@ -653,6 +654,13 @@ select {
   color: #ffffff;
   background: #9e005d;
   border-color: #9e005d;
+}
+
+.code-button span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .store-cell {
