@@ -7,6 +7,12 @@ const PORT = Number(process.env.API_PORT || 8000);
 const NODE_ENV = process.env.NODE_ENV || "development";
 const SESSION_TTL_SECONDS = 8 * 60 * 60;
 const MAX_BODY_BYTES = 1_048_576;
+const VERIFY_CODE_MAX_ATTEMPTS = 5;
+const VERIFY_CODE_LOCK_SECONDS = 15 * 60;
+const VERIFICATION_RESEND_COOLDOWN_SECONDS = 60;
+const PASSWORD_RESET_COOLDOWN_SECONDS = 60;
+const AUTH_IP_WINDOW_MS = 15 * 60 * 1000;
+const authRateBuckets = new Map();
 const ADMIN_EMAIL = String(
   process.env.ADMIN_EMAIL || (NODE_ENV === "production" ? "" : "admin@promo-code.local"),
 )
@@ -64,6 +70,43 @@ function hashToken(token) {
 
 function makeToken() {
   return randomBytes(32).toString("hex");
+}
+
+function getClientAddress(request) {
+  const remoteAddress = request.socket?.remoteAddress || "unknown";
+  const forwardedFor = String(request.headers["x-forwarded-for"] || "")
+    .split(",")[0]
+    .trim();
+  if (
+    forwardedFor &&
+    (remoteAddress === "127.0.0.1" ||
+      remoteAddress === "::1" ||
+      remoteAddress === "::ffff:127.0.0.1")
+  ) {
+    return forwardedFor;
+  }
+  return remoteAddress;
+}
+
+function consumeAuthIpLimit(request, action, maxAttempts) {
+  const now = Date.now();
+  const key = `${action}:${getClientAddress(request)}`;
+  const current = authRateBuckets.get(key);
+  if (!current || current.resetAt <= now) {
+    authRateBuckets.set(key, { count: 1, resetAt: now + AUTH_IP_WINDOW_MS });
+  } else {
+    current.count += 1;
+    if (current.count > maxAttempts) {
+      return Math.max(1, Math.ceil((current.resetAt - now) / 1000));
+    }
+  }
+
+  if (authRateBuckets.size > 10_000) {
+    for (const [bucketKey, bucket] of authRateBuckets) {
+      if (bucket.resetAt <= now) authRateBuckets.delete(bucketKey);
+    }
+  }
+  return 0;
 }
 
 function isEmail(value) {
@@ -124,6 +167,16 @@ function merchantFromRow(row) {
     status: row.status,
     adminStatus: row.admin_status,
     dealCount: Number(row.deal_count || 0),
+    createdAt: toIso(row.created_at),
+  };
+}
+
+function userFromRow(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    email: row.email,
+    emailVerified: row.email_verified === true,
     createdAt: toIso(row.created_at),
   };
 }
@@ -220,10 +273,11 @@ async function getAdmin(request) {
 }
 
 async function getMerchant(request) {
-  const id = await getPrincipal(request, "merchant");
-  if (!id) return null;
-  const result = await query("SELECT * FROM merchants WHERE id = $1", [id]);
-  return result.rows[0] || null;
+  const user = await getUser(request);
+  if (!user || user.email_verified !== true) return null;
+  const result = await query("SELECT * FROM merchants WHERE user_id = $1", [user.id]);
+  if (result.rows[0]) return result.rows[0];
+  return withTransaction((client) => getOrCreateUserMerchant(client, user, "", ""));
 }
 
 async function getUser(request) {
@@ -231,6 +285,42 @@ async function getUser(request) {
   if (!id) return null;
   const result = await query("SELECT * FROM users WHERE id = $1", [id]);
   return result.rows[0] || null;
+}
+
+async function getOrCreateUserMerchant(client, user, storeName, website) {
+  const existing = await client.query(
+    "SELECT * FROM merchants WHERE user_id = $1 FOR UPDATE",
+    [user.id],
+  );
+  if (existing.rowCount) {
+    return existing.rows[0];
+  }
+
+  const legacy = await client.query(
+    "SELECT * FROM merchants WHERE email = $1 AND user_id IS NULL FOR UPDATE",
+    [user.email],
+  );
+  if (legacy.rowCount) {
+    const linked = await client.query(
+      `UPDATE merchants
+          SET user_id = $1, store_name = COALESCE(NULLIF($2, ''), store_name),
+              website = COALESCE(NULLIF($3, ''), website),
+              email_verified = true, status = 'active'
+        WHERE id = $4
+      RETURNING *`,
+      [user.id, storeName, website, legacy.rows[0].id],
+    );
+    return linked.rows[0];
+  }
+
+  const inserted = await client.query(
+    `INSERT INTO merchants
+      (user_id, email, password_hash, password_salt, store_name, website, email_verified, status)
+     VALUES ($1, $2, $3, $4, $5, $6, true, 'active')
+     RETURNING *`,
+    [user.id, user.email, user.password_hash, user.password_salt, storeName, website],
+  );
+  return inserted.rows[0];
 }
 
 function setSessionCookie(response, type, token) {
@@ -267,6 +357,11 @@ function sendJson(response, status, payload, request) {
 
 function sendError(response, status, message, request) {
   sendJson(response, status, { message }, request);
+}
+
+function sendRateLimitError(response, retryAfterSeconds, message, request) {
+  response.setHeader("Retry-After", String(retryAfterSeconds));
+  sendError(response, 429, message, request);
 }
 
 function httpError(statusCode, message) {
@@ -384,7 +479,10 @@ function safeMailSettings(settings) {
 
 async function getAdminSettingsPayload() {
   return {
-    allowMerchantRegistration: await getSetting("allowMerchantRegistration", true),
+    allowUserRegistration: await getSetting(
+      "allowUserRegistration",
+      await getSetting("allowMerchantRegistration", true),
+    ),
     siteStatus: await getSetting("siteStatus", "正常运行"),
     showGithubLink: await getSetting("showGithubLink", true),
     merchantDealTotalLimit: await getSetting("merchantDealTotalLimit", 50),
@@ -515,16 +613,30 @@ async function sendMail(to, subject, text, html) {
   await transporter.sendMail({ from, to, subject, text, html });
 }
 
-async function sendVerificationEmail(email, token) {
+async function sendUserVerificationEmail(email, token, code) {
   const baseUrl = String(
     process.env.EMAIL_VERIFICATION_BASE_URL || process.env.FRONTEND_ORIGINS?.split(",")[0] || "",
   ).replace(/\/$/, "");
-  const url = `${baseUrl}/merchant/verify?token=${encodeURIComponent(token)}`;
+  const url = `${baseUrl}/user/verify?token=${encodeURIComponent(token)}`;
   await sendMail(
     email,
-    "验证你的 promo-code 商户账号",
-    `请打开以下链接完成邮箱验证：${url}`,
-    `<p>请点击以下链接完成邮箱验证：</p><p><a href="${url}">${url}</a></p>`,
+    "验证你的 promo-code 用户账号",
+    `请使用验证码 ${code}，或打开以下链接完成邮箱验证：${url}`,
+    `<p>你的 promo-code 邮箱验证码是：</p><p><strong>${code}</strong></p><p><a href="${url}">点击完成邮箱验证</a></p>`,
+  );
+  return url;
+}
+
+async function sendPasswordResetEmail(email, token) {
+  const baseUrl = String(
+    process.env.EMAIL_VERIFICATION_BASE_URL || process.env.FRONTEND_ORIGINS?.split(",")[0] || "",
+  ).replace(/\/$/, "");
+  const url = `${baseUrl}/user/reset-password?token=${encodeURIComponent(token)}`;
+  await sendMail(
+    email,
+    "重置你的 promo-code 密码",
+    `请打开以下链接重置密码：${url}`,
+    `<p>请点击以下链接重置你的 promo-code 密码：</p><p><a href="${url}">重置密码</a></p>`,
   );
   return url;
 }
@@ -552,29 +664,13 @@ async function ensureDevelopmentAccounts() {
   if (!userExists.rowCount) {
     const record = createPasswordRecord("user123456");
     await query(
-      `INSERT INTO users (email, password_hash, password_salt)
-       VALUES ($1, $2, $3)`,
+      `INSERT INTO users (email, password_hash, password_salt, email_verified)
+       VALUES ($1, $2, $3, true)`,
       [userEmail, record.hash, record.salt],
     );
   }
+  await query("UPDATE users SET email_verified = true WHERE email = $1", [userEmail]);
 
-  const merchantEmail = "merchant@promo-code.local";
-  const merchantExists = await query("SELECT id FROM merchants WHERE email = $1", [merchantEmail]);
-  if (!merchantExists.rowCount) {
-    const record = createPasswordRecord("merchant123456");
-    await query(
-      `INSERT INTO merchants
-        (email, password_hash, password_salt, store_name, website, email_verified, status)
-       VALUES ($1, $2, $3, $4, $5, true, 'active')`,
-      [
-        merchantEmail,
-        record.hash,
-        record.salt,
-        "本地测试商户",
-        "https://example.com",
-      ],
-    );
-  }
 }
 
 async function getPublicDeals(url, request) {
@@ -678,7 +774,10 @@ async function handleRequest(request, response) {
       response,
       200,
       {
-        allowMerchantRegistration: await getSetting("allowMerchantRegistration", true),
+        allowUserRegistration: await getSetting(
+          "allowUserRegistration",
+          await getSetting("allowMerchantRegistration", true),
+        ),
         showGithubLink: await getSetting("showGithubLink", true),
         githubUrl: GITHUB_REPOSITORY_URL,
       },
@@ -726,7 +825,7 @@ async function handleRequest(request, response) {
     return;
   }
 
-  if (request.method === "POST" && path === "/api/auth/merchant/register") {
+  if (request.method === "POST" && path === "/api/auth/user/register") {
     const body = await readBody(request);
     const email = String(body.email || "").trim().toLowerCase();
     const password = String(body.password || "");
@@ -734,8 +833,13 @@ async function handleRequest(request, response) {
       sendError(response, 400, "请输入有效邮箱和至少 8 位密码", request);
       return;
     }
-    if (!(await getSetting("allowMerchantRegistration", true))) {
-      sendError(response, 403, "平台暂时关闭了商户注册", request);
+    if (
+      !(await getSetting(
+        "allowUserRegistration",
+        await getSetting("allowMerchantRegistration", true),
+      ))
+    ) {
+      sendError(response, 403, "平台暂时关闭了用户注册", request);
       return;
     }
     const mailSettings = await getMailSettings();
@@ -751,30 +855,44 @@ async function handleRequest(request, response) {
       return;
     }
     const record = createPasswordRecord(password);
+    const token = makeToken();
+    const verificationCode = String(Math.floor(100000 + Math.random() * 900000));
     try {
       const result = await withTransaction(async (client) => {
         const inserted = await client.query(
-          `INSERT INTO merchants (email, password_hash, password_salt)
-           VALUES ($1, $2, $3)
+          `INSERT INTO users (email, password_hash, password_salt, email_verified)
+           VALUES ($1, $2, $3, false)
            RETURNING *`,
           [email, record.hash, record.salt],
         );
-        const token = makeToken();
         await client.query(
-          `INSERT INTO verification_tokens (token_hash, merchant_id, expires_at)
-           VALUES ($1, $2, now() + interval '24 hours')`,
-          [hashToken(token), inserted.rows[0].id],
+          `UPDATE verification_tokens
+              SET used_at = now()
+            WHERE user_id = $1 AND used_at IS NULL`,
+          [inserted.rows[0].id],
         );
-        const verificationUrl = await sendVerificationEmail(email, token);
-        return { merchant: inserted.rows[0], verificationUrl };
+        await client.query(
+          `INSERT INTO verification_tokens
+            (token_hash, user_id, verification_code, expires_at)
+           VALUES ($1, $2, $3, now() + interval '24 hours')`,
+          [hashToken(token), inserted.rows[0].id, verificationCode],
+        );
+        await client.query(
+          "UPDATE users SET verification_sent_at = now() WHERE id = $1",
+          [inserted.rows[0].id],
+        );
+        const verificationUrl = await sendUserVerificationEmail(email, token, verificationCode);
+        return { user: inserted.rows[0], verificationUrl };
       });
       sendJson(
         response,
         201,
         {
-          merchant: merchantFromRow(result.merchant),
-          message: "注册成功，请检查邮箱完成验证",
-          ...(NODE_ENV !== "production" ? { verificationUrl: result.verificationUrl } : {}),
+          user: userFromRow(result.user),
+          message: "注册成功，请前往邮箱激活账号或输入验证码",
+          ...(NODE_ENV !== "production"
+            ? { verificationUrl: result.verificationUrl, verificationCode }
+            : {}),
         },
         request,
       );
@@ -785,21 +903,24 @@ async function handleRequest(request, response) {
     return;
   }
 
-  if (request.method === "GET" && path === "/api/auth/merchant/verify") {
+  if (request.method === "GET" && path === "/api/auth/user/verify") {
     const token = String(url.searchParams.get("token") || "");
     if (!token) {
       sendError(response, 400, "验证链接无效", request);
       return;
     }
     const result = await query(
-      `UPDATE merchants m
-          SET email_verified = true, status = 'active', verified_at = now()
+      `UPDATE users u
+          SET email_verified = true,
+              verified_at = now(),
+              verification_failed_attempts = 0,
+              verification_locked_until = NULL
         FROM verification_tokens v
        WHERE v.token_hash = $1
-         AND v.merchant_id = m.id
+         AND v.user_id = u.id
          AND v.used_at IS NULL
          AND v.expires_at > now()
-      RETURNING m.*`,
+      RETURNING u.*`,
       [hashToken(token)],
     );
     if (!result.rowCount) {
@@ -809,67 +930,170 @@ async function handleRequest(request, response) {
     await query("UPDATE verification_tokens SET used_at = now() WHERE token_hash = $1", [
       hashToken(token),
     ]);
-    await createSession("merchant", result.rows[0].id, response);
-    sendJson(response, 200, { merchant: merchantFromRow(result.rows[0]) }, request);
+    await createSession("user", result.rows[0].id, response);
+    sendJson(response, 200, { user: userFromRow(result.rows[0]) }, request);
     return;
   }
 
-  if (request.method === "POST" && path === "/api/auth/merchant/login") {
+  if (request.method === "POST" && path === "/api/auth/user/verify-code") {
     const body = await readBody(request);
     const email = String(body.email || "").trim().toLowerCase();
-    const result = await query("SELECT * FROM merchants WHERE email = $1", [email]);
-    const merchant = result.rows[0];
-    if (!merchant || !verifyPassword(String(body.password || ""), merchant)) {
-      sendError(response, 401, "邮箱或密码不正确", request);
+    const code = String(body.code || "").trim();
+    if (!isEmail(email) || !/^\d{6}$/.test(code)) {
+      sendError(response, 400, "请输入有效邮箱和 6 位验证码", request);
       return;
     }
-    if (!merchant.email_verified) {
-      sendError(response, 403, "请先完成邮箱验证", request);
+    const retryAfter = consumeAuthIpLimit(request, "verify-code", 30);
+    if (retryAfter) {
+      sendRateLimitError(response, retryAfter, "验证请求过于频繁，请稍后再试", request);
       return;
     }
-    if (merchant.status === "suspended" || merchant.admin_status === "suspended") {
-      sendError(response, 403, "该商户账号已暂停", request);
-      return;
-    }
-    await createSession("merchant", merchant.id, response);
-    sendJson(response, 200, { merchant: merchantFromRow(merchant) }, request);
-    return;
-  }
-
-  if (request.method === "GET" && path === "/api/auth/merchant/me") {
-    const merchant = await getMerchant(request);
-    sendJson(response, 200, { merchant: merchantFromRow(merchant) }, request);
-    return;
-  }
-
-  if (request.method === "POST" && path === "/api/auth/merchant/logout") {
-    await destroySession(request, response, "merchant");
-    sendJson(response, 200, { ok: true }, request);
-    return;
-  }
-
-  if (request.method === "POST" && path === "/api/auth/user/register") {
-    const body = await readBody(request);
-    const email = String(body.email || "").trim().toLowerCase();
-    const password = String(body.password || "");
-    if (!isEmail(email) || password.length < 8) {
-      sendError(response, 400, "请输入有效邮箱和至少 8 位密码", request);
-      return;
-    }
-    const record = createPasswordRecord(password);
-    try {
-      const result = await query(
-        `INSERT INTO users (email, password_hash, password_salt)
-         VALUES ($1, $2, $3)
-         RETURNING *`,
-        [email, record.hash, record.salt],
+    const result = await withTransaction(async (client) => {
+      const userResult = await client.query(
+        "SELECT * FROM users WHERE email = $1 FOR UPDATE",
+        [email],
       );
-      await createSession("user", result.rows[0].id, response);
-      sendJson(response, 201, { user: { id: result.rows[0].id, email } }, request);
-    } catch (error) {
-      if (error.code === "23505") sendError(response, 409, "这个邮箱已经注册", request);
-      else throw error;
+      const user = userResult.rows[0];
+      if (!user) return { kind: "invalid" };
+      if (user.email_verified) return { kind: "verified", user };
+      if (
+        user.verification_locked_until &&
+        new Date(user.verification_locked_until).getTime() > Date.now()
+      ) {
+        return {
+          kind: "locked",
+          retryAfter: Math.max(
+            1,
+            Math.ceil((new Date(user.verification_locked_until).getTime() - Date.now()) / 1000),
+          ),
+        };
+      }
+
+      const tokenResult = await client.query(
+        `SELECT token_hash
+           FROM verification_tokens
+          WHERE user_id = $1
+            AND verification_code = $2
+            AND used_at IS NULL
+            AND expires_at > now()
+          ORDER BY expires_at DESC
+          LIMIT 1`,
+        [user.id, code],
+      );
+      if (!tokenResult.rowCount) {
+        const failedAttempts = Number(user.verification_failed_attempts || 0) + 1;
+        const locked = failedAttempts >= VERIFY_CODE_MAX_ATTEMPTS;
+        await client.query(
+          `UPDATE users
+              SET verification_failed_attempts = $1,
+                  verification_locked_until = CASE
+                    WHEN $2 THEN now() + ($3 * interval '1 second')
+                    ELSE NULL
+                  END
+            WHERE id = $4`,
+          [locked ? 0 : failedAttempts, locked, VERIFY_CODE_LOCK_SECONDS, user.id],
+        );
+        return {
+          kind: locked ? "locked" : "invalid",
+          retryAfter: locked ? VERIFY_CODE_LOCK_SECONDS : 0,
+        };
+      }
+
+      const verifiedUser = await client.query(
+        `UPDATE users
+            SET email_verified = true,
+                verified_at = now(),
+                verification_failed_attempts = 0,
+                verification_locked_until = NULL
+          WHERE id = $1
+        RETURNING *`,
+        [user.id],
+      );
+      await client.query(
+        "UPDATE verification_tokens SET used_at = now() WHERE user_id = $1 AND used_at IS NULL",
+        [user.id],
+      );
+      return { kind: "verified", user: verifiedUser.rows[0] };
+    });
+    if (result.kind === "locked") {
+      sendRateLimitError(
+        response,
+        result.retryAfter || VERIFY_CODE_LOCK_SECONDS,
+        "验证码错误次数过多，请稍后再试",
+        request,
+      );
+      return;
     }
+    if (result.kind !== "verified") {
+      sendError(response, 400, "验证码错误或已过期", request);
+      return;
+    }
+    await createSession("user", result.user.id, response);
+    sendJson(response, 200, { user: userFromRow(result.user) }, request);
+    return;
+  }
+
+  if (request.method === "POST" && path === "/api/auth/user/resend-verification") {
+    const body = await readBody(request);
+    const email = String(body.email || "").trim().toLowerCase();
+    if (!isEmail(email)) {
+      sendError(response, 400, "请输入有效邮箱", request);
+      return;
+    }
+    const retryAfter = consumeAuthIpLimit(request, "resend-verification", 10);
+    if (retryAfter) {
+      sendRateLimitError(response, retryAfter, "请求过于频繁，请稍后再试", request);
+      return;
+    }
+    const userResult = await query("SELECT * FROM users WHERE email = $1", [email]);
+    const user = userResult.rows[0];
+    if (!user || user.email_verified) {
+      sendJson(response, 200, { message: "如果账号存在，验证邮件将会发送" }, request);
+      return;
+    }
+    if (user.verification_sent_at) {
+      const elapsedSeconds =
+        (Date.now() - new Date(user.verification_sent_at).getTime()) / 1000;
+      if (elapsedSeconds < VERIFICATION_RESEND_COOLDOWN_SECONDS) {
+        sendRateLimitError(
+          response,
+          Math.ceil(VERIFICATION_RESEND_COOLDOWN_SECONDS - elapsedSeconds),
+          "验证邮件发送过于频繁，请稍后再试",
+          request,
+        );
+        return;
+      }
+    }
+    const token = makeToken();
+    const verificationCode = String(Math.floor(100000 + Math.random() * 900000));
+    const verificationUrl = await withTransaction(async (client) => {
+      await client.query(
+        `UPDATE verification_tokens
+            SET used_at = now()
+          WHERE user_id = $1 AND used_at IS NULL`,
+        [user.id],
+      );
+      await client.query(
+        `INSERT INTO verification_tokens
+          (token_hash, user_id, verification_code, expires_at)
+         VALUES ($1, $2, $3, now() + interval '24 hours')`,
+        [hashToken(token), user.id, verificationCode],
+      );
+      await client.query(
+        "UPDATE users SET verification_sent_at = now() WHERE id = $1",
+        [user.id],
+      );
+      return sendUserVerificationEmail(email, token, verificationCode);
+    });
+    sendJson(
+      response,
+      200,
+      {
+        message: "验证邮件已发送",
+        ...(NODE_ENV !== "production" ? { verificationUrl, verificationCode } : {}),
+      },
+      request,
+    );
     return;
   }
 
@@ -882,14 +1106,118 @@ async function handleRequest(request, response) {
       sendError(response, 401, "邮箱或密码不正确", request);
       return;
     }
+    if (!user.email_verified) {
+      sendError(response, 403, "请先前往邮箱激活账号", request);
+      return;
+    }
     await createSession("user", user.id, response);
-    sendJson(response, 200, { user: { id: user.id, email: user.email } }, request);
+    sendJson(response, 200, { user: userFromRow(user) }, request);
     return;
   }
 
+  if (request.method === "POST" && path === "/api/auth/user/forgot-password") {
+    const body = await readBody(request);
+    const email = String(body.email || "").trim().toLowerCase();
+    if (!isEmail(email)) {
+      sendError(response, 400, "请输入有效邮箱", request);
+      return;
+    }
+    const retryAfter = consumeAuthIpLimit(request, "forgot-password", 10);
+    if (retryAfter) {
+      sendRateLimitError(response, retryAfter, "请求过于频繁，请稍后再试", request);
+      return;
+    }
+    const result = await query("SELECT * FROM users WHERE email = $1", [email]);
+    const user = result.rows[0];
+    let resetUrl = "";
+    if (user) {
+      if (user.password_reset_sent_at) {
+        const elapsedSeconds =
+          (Date.now() - new Date(user.password_reset_sent_at).getTime()) / 1000;
+        if (elapsedSeconds < PASSWORD_RESET_COOLDOWN_SECONDS) {
+          sendRateLimitError(
+            response,
+            Math.ceil(PASSWORD_RESET_COOLDOWN_SECONDS - elapsedSeconds),
+            "重置邮件发送过于频繁，请稍后再试",
+            request,
+          );
+          return;
+        }
+      }
+      const token = makeToken();
+      resetUrl = await withTransaction(async (client) => {
+        await client.query(
+          `UPDATE password_reset_tokens
+              SET used_at = now()
+            WHERE user_id = $1 AND used_at IS NULL`,
+          [user.id],
+        );
+        await client.query(
+          `INSERT INTO password_reset_tokens (token_hash, user_id, expires_at)
+           VALUES ($1, $2, now() + interval '1 hour')`,
+          [hashToken(token), user.id],
+        );
+        await client.query(
+          "UPDATE users SET password_reset_sent_at = now() WHERE id = $1",
+          [user.id],
+        );
+        return sendPasswordResetEmail(email, token);
+      });
+    }
+    sendJson(
+      response,
+      200,
+      {
+        message: "如果账号存在，密码重置邮件将会发送",
+        ...(NODE_ENV !== "production" && resetUrl ? { resetUrl } : {}),
+      },
+      request,
+    );
+    return;
+  }
+
+  if (request.method === "POST" && path === "/api/auth/user/reset-password") {
+    const body = await readBody(request);
+    const token = String(body.token || "");
+    const password = String(body.password || "");
+    if (!token || password.length < 8) {
+      sendError(response, 400, "重置链接无效或密码少于 8 位", request);
+      return;
+    }
+    const record = createPasswordRecord(password);
+    const result = await query(
+      `UPDATE users u
+          SET password_hash = $1, password_salt = $2
+        FROM password_reset_tokens r
+       WHERE r.token_hash = $3
+         AND r.user_id = u.id
+         AND r.used_at IS NULL
+         AND r.expires_at > now()
+      RETURNING u.*`,
+      [record.hash, record.salt, hashToken(token)],
+    );
+    if (!result.rowCount) {
+      sendError(response, 400, "重置链接已失效或已使用", request);
+      return;
+    }
+    await query("UPDATE password_reset_tokens SET used_at = now() WHERE token_hash = $1", [
+      hashToken(token),
+    ]);
+    await query("DELETE FROM sessions WHERE principal_type = 'user' AND principal_id = $1", [
+      result.rows[0].id,
+    ]);
+    sendJson(response, 200, { user: userFromRow(result.rows[0]) }, request);
+    return;
+  }
   if (request.method === "GET" && path === "/api/auth/user/me") {
     const user = await getUser(request);
-    sendJson(response, 200, { user: user ? { id: user.id, email: user.email } : null }, request);
+    const merchant = user
+      ? (await query("SELECT * FROM merchants WHERE user_id = $1", [user.id])).rows[0]
+      : null;
+    sendJson(response, 200, {
+      user: userFromRow(user),
+      merchant: merchant ? merchantFromRow(merchant) : null,
+    }, request);
     return;
   }
 
@@ -899,9 +1227,12 @@ async function handleRequest(request, response) {
     return;
   }
 
-  if (request.method === "GET" && path === "/api/merchant/deals") {
+  if (
+    request.method === "GET" &&
+    (path === "/api/merchant/deals" || path === "/api/user/deals")
+  ) {
     const merchant = await getMerchant(request);
-    if (!requirePrincipal(merchant, response, request, "请先登录商户账号")) return;
+    if (!requirePrincipal(merchant, response, request, "请先登录")) return;
     const result = await query(
       `SELECT p.*, m.store_name, m.website, m.email AS owner_email
          FROM promo_codes p JOIN merchants m ON m.id = p.merchant_id
@@ -912,11 +1243,14 @@ async function handleRequest(request, response) {
     return;
   }
 
-  if (request.method === "POST" && path === "/api/merchant/deals") {
+  if (
+    request.method === "POST" &&
+    (path === "/api/merchant/deals" || path === "/api/user/deals")
+  ) {
     const merchant = await getMerchant(request);
-    if (!requirePrincipal(merchant, response, request, "请先登录商户账号")) return;
+    if (!requirePrincipal(merchant, response, request, "请先登录")) return;
     if (merchant.status !== "active" || merchant.admin_status === "suspended") {
-      sendError(response, 403, "该商户账号当前不可发布优惠码", request);
+      sendError(response, 403, "当前账号不可创建优惠码", request);
       return;
     }
     const body = await readBody(request);
@@ -960,7 +1294,7 @@ async function handleRequest(request, response) {
           lockedMerchant.rows[0].status !== "active" ||
           lockedMerchant.rows[0].admin_status === "suspended"
         ) {
-          throw httpError(403, "该商户账号当前不可发布优惠码");
+          throw httpError(403, "当前账号不可创建优惠码");
         }
         const counts = await client.query(
           `SELECT
@@ -1019,12 +1353,12 @@ async function handleRequest(request, response) {
     return;
   }
 
-  const merchantDealMatch = path.match(/^\/api\/merchant\/deals\/([^/]+)$/);
+  const merchantDealMatch = path.match(/^\/api\/(?:merchant|user)\/deals\/([^/]+)$/);
   if ((request.method === "PUT" || request.method === "PATCH") && merchantDealMatch) {
     const merchant = await getMerchant(request);
-    if (!requirePrincipal(merchant, response, request, "请先登录商户账号")) return;
+    if (!requirePrincipal(merchant, response, request, "请先登录")) return;
     if (merchant.status !== "active" || merchant.admin_status === "suspended") {
-      sendError(response, 403, "该商户账号当前不可编辑优惠码", request);
+      sendError(response, 403, "当前账号不可编辑优惠码", request);
       return;
     }
     const body = await readBody(request);
@@ -1092,12 +1426,12 @@ async function handleRequest(request, response) {
     return;
   }
 
-  const merchantToggleMatch = path.match(/^\/api\/merchant\/deals\/([^/]+)\/toggle$/);
+  const merchantToggleMatch = path.match(/^\/api\/(?:merchant|user)\/deals\/([^/]+)\/toggle$/);
   if (request.method === "POST" && merchantToggleMatch) {
     const merchant = await getMerchant(request);
-    if (!requirePrincipal(merchant, response, request, "请先登录商户账号")) return;
+    if (!requirePrincipal(merchant, response, request, "请先登录")) return;
     if (merchant.status !== "active" || merchant.admin_status === "suspended") {
-      sendError(response, 403, "该商户账号当前不可修改优惠码", request);
+      sendError(response, 403, "当前账号不可修改优惠码", request);
       return;
     }
     const publicLimit = Number(await getSetting("merchantDealPublicLimit", 10));
@@ -1111,7 +1445,7 @@ async function handleRequest(request, response) {
         lockedMerchant.rows[0].status !== "active" ||
         lockedMerchant.rows[0].admin_status === "suspended"
       ) {
-        throw httpError(403, "该商户账号当前不可修改优惠码");
+        throw httpError(403, "当前账号不可修改优惠码");
       }
       const current = await client.query(
         "SELECT status FROM promo_codes WHERE id = $1 AND merchant_id = $2 FOR UPDATE",
@@ -1572,8 +1906,10 @@ async function handleRequest(request, response) {
 
   if (request.method === "PATCH" && path === "/api/admin/settings") {
     const body = await readBody(request);
-    if (typeof body.allowMerchantRegistration === "boolean") {
-      await setSetting("allowMerchantRegistration", body.allowMerchantRegistration);
+    if (typeof body.allowUserRegistration === "boolean") {
+      await setSetting("allowUserRegistration", body.allowUserRegistration);
+    } else if (typeof body.allowMerchantRegistration === "boolean") {
+      await setSetting("allowUserRegistration", body.allowMerchantRegistration);
     }
     if (typeof body.showGithubLink === "boolean") {
       await setSetting("showGithubLink", body.showGithubLink);

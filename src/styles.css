@@ -754,7 +754,7 @@ select {
 .deal-actions {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 0;
 }
 
 .deal-action-button {
@@ -1174,6 +1174,19 @@ select {
   color: #ef9a9a;
   font-size: 12px;
   line-height: 1.5;
+}
+
+.form-success {
+  margin: -4px 0 0;
+  color: #9ed9b0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.auth-forgot-link {
+  align-self: flex-end;
+  margin-top: -8px;
+  font-size: 12px;
 }
 
 .auth-switch {

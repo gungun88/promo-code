@@ -28,6 +28,12 @@ CREATE TABLE IF NOT EXISTS users (
   email text NOT NULL UNIQUE,
   password_hash text NOT NULL,
   password_salt text NOT NULL,
+  email_verified boolean NOT NULL DEFAULT false,
+  verified_at timestamptz,
+  verification_failed_attempts integer NOT NULL DEFAULT 0,
+  verification_locked_until timestamptz,
+  verification_sent_at timestamptz,
+  password_reset_sent_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
@@ -90,7 +96,16 @@ CREATE INDEX IF NOT EXISTS sessions_expires_at_idx ON sessions (expires_at);
 
 CREATE TABLE IF NOT EXISTS verification_tokens (
   token_hash text PRIMARY KEY,
-  merchant_id uuid NOT NULL REFERENCES merchants(id) ON DELETE CASCADE,
+  merchant_id uuid REFERENCES merchants(id) ON DELETE CASCADE,
+  user_id uuid REFERENCES users(id) ON DELETE CASCADE,
+  verification_code text,
+  expires_at timestamptz NOT NULL,
+  used_at timestamptz
+);
+
+CREATE TABLE IF NOT EXISTS password_reset_tokens (
+  token_hash text PRIMARY KEY,
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   expires_at timestamptz NOT NULL,
   used_at timestamptz
 );
@@ -116,3 +131,29 @@ CREATE UNIQUE INDEX IF NOT EXISTS promo_codes_merchant_code_lower_idx
   ON promo_codes (merchant_id, lower(code));
 CREATE INDEX IF NOT EXISTS reports_status_idx ON reports (status, created_at DESC);
 CREATE INDEX IF NOT EXISTS website_filters_status_idx ON website_filters (status);
+
+ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified boolean NOT NULL DEFAULT false;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS verified_at timestamptz;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_failed_attempts integer NOT NULL DEFAULT 0;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_locked_until timestamptz;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_sent_at timestamptz;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS password_reset_sent_at timestamptz;
+ALTER TABLE merchants ADD COLUMN IF NOT EXISTS user_id uuid REFERENCES users(id) ON DELETE SET NULL;
+ALTER TABLE verification_tokens ALTER COLUMN merchant_id DROP NOT NULL;
+ALTER TABLE verification_tokens ADD COLUMN IF NOT EXISTS user_id uuid REFERENCES users(id) ON DELETE CASCADE;
+ALTER TABLE verification_tokens ADD COLUMN IF NOT EXISTS verification_code text;
+UPDATE users
+   SET email_verified = true,
+       verified_at = COALESCE(verified_at, created_at, now())
+ WHERE email_verified = false
+   AND NOT EXISTS (
+     SELECT 1
+       FROM verification_tokens
+      WHERE verification_tokens.user_id = users.id
+        AND verification_tokens.used_at IS NULL
+   );
+CREATE UNIQUE INDEX IF NOT EXISTS merchants_user_id_idx
+  ON merchants (user_id)
+  WHERE user_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS verification_tokens_user_id_idx ON verification_tokens (user_id);
+CREATE INDEX IF NOT EXISTS password_reset_tokens_user_id_idx ON password_reset_tokens (user_id);

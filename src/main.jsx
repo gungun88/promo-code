@@ -33,6 +33,7 @@ import {
   Settings,
   ShieldAlert,
   Store,
+  Tag,
   Tags,
   Trash2,
   User,
@@ -53,7 +54,7 @@ const API_BASE_URL = (
   import.meta.env.VITE_API_BASE_URL || (import.meta.env.DEV ? "http://localhost:8000" : "")
 ).replace(/\/$/, "");
 const DEFAULT_ADMIN_SETTINGS = {
-  allowMerchantRegistration: true,
+  allowUserRegistration: true,
   siteStatus: "正常运行",
   merchantDealTotalLimit: 50,
   merchantDealPublicLimit: 10,
@@ -321,7 +322,6 @@ function useNavigation() {
 
 function App() {
   const { path, navigate } = useNavigation();
-  const [session, setSession] = useState(null);
   const [userSession, setUserSession] = useState(null);
   const [adminSession, setAdminSession] = useState(null);
   const [authReady, setAuthReady] = useState(false);
@@ -330,26 +330,27 @@ function App() {
   useEffect(() => {
     let cancelled = false;
     Promise.all([
-      apiRequest("/api/auth/merchant/me"),
       apiRequest("/api/auth/user/me"),
       apiRequest("/api/admin/me"),
     ])
-      .then(([merchantData, userData, adminData]) => {
+      .then(([userData, adminData]) => {
         if (cancelled) return;
-        const merchant = merchantData?.merchant;
         const user = userData?.user;
         const admin = adminData?.admin;
-        setSession(
-          merchant
-            ? { accountId: merchant.id, email: merchant.email, storeName: merchant.storeName }
+        setUserSession(
+          user
+            ? {
+                accountId: user.id,
+                email: user.email,
+                emailVerified: user.emailVerified,
+                merchant: userData?.merchant || null,
+              }
             : null,
         );
-        setUserSession(user ? { accountId: user.id, email: user.email } : null);
         setAdminSession(admin ? { email: admin.email, name: admin.name } : null);
       })
       .catch(() => {
         if (!cancelled) {
-          setSession(null);
           setUserSession(null);
           setAdminSession(null);
         }
@@ -371,31 +372,14 @@ function App() {
 
   const showToast = (message, tone = "default") => setToast({ message, tone });
 
-  const onLogin = (account) => {
-    setSession({
-      accountId: account.id,
-      email: account.email,
-      storeName: account.storeName,
-    });
-    navigate("/merchant/deals");
-  };
-
-  const onLogout = async () => {
-    try {
-      await apiRequest("/api/auth/merchant/logout", { method: "POST" });
-    } catch {
-      // The local React state is still cleared when the server session has expired.
-    }
-    setSession(null);
-    navigate("/");
-  };
-
-  const onUserLogin = (account) => {
+  const onUserLogin = (account, fallbackPath = "/user/center") => {
     setUserSession({
       accountId: account.id,
       email: account.email,
+      emailVerified: account.emailVerified,
     });
-    const nextPath = new URLSearchParams(window.location.search).get("next") || "/user/center";
+    const nextPath =
+      new URLSearchParams(window.location.search).get("next") || fallbackPath;
     navigate(nextPath);
   };
 
@@ -449,54 +433,32 @@ function App() {
   } else if (path === "/user/login") {
     content = <UserLogin navigate={navigate} onLogin={onUserLogin} />;
   } else if (path === "/user/register") {
-    content = <UserRegister navigate={navigate} onLogin={onUserLogin} />;
+    content = <UserRegister navigate={navigate} />;
+  } else if (path === "/user/verify") {
+    content = <UserVerify navigate={navigate} onLogin={onUserLogin} showToast={showToast} />;
+  } else if (path === "/user/forgot-password") {
+    content = <UserForgotPassword navigate={navigate} showToast={showToast} />;
+  } else if (path === "/user/reset-password") {
+    content = <UserResetPassword navigate={navigate} onLogin={onUserLogin} showToast={showToast} />;
   } else if (path === "/user/center") {
     content = userSession ? (
       <UserCenter
         userSession={userSession}
         navigate={navigate}
-        onLogout={onUserLogout}
         showToast={showToast}
       />
     ) : (
       <UserLogin navigate={navigate} onLogin={onUserLogin} />
     );
-  } else if (path === "/merchant/register") {
-    content = (
-      <MerchantRegister
-        navigate={navigate}
-        showToast={showToast}
-      />
-    );
-  } else if (path === "/merchant/login") {
-    content = (
-      <MerchantLogin
-        navigate={navigate}
-        onLogin={onLogin}
-        showToast={showToast}
-      />
-    );
-  } else if (path === "/merchant/verify") {
-    content = (
-      <MerchantVerify
-        navigate={navigate}
-        onLogin={onLogin}
-        showToast={showToast}
-      />
-    );
-  } else if (path === "/merchant/deals") {
-    content = session ? (
+  } else if (path === "/create-deal" || path === "/merchant/deals") {
+    content = userSession ? (
       <MerchantDashboard
-        session={session}
+        session={userSession}
         navigate={navigate}
         showToast={showToast}
       />
     ) : (
-      <MerchantLogin
-        navigate={navigate}
-        onLogin={onLogin}
-        showToast={showToast}
-      />
+      <UserLogin navigate={navigate} onLogin={onUserLogin} nextPath="/create-deal" />
     );
   } else {
     content = <PublicDirectory navigate={navigate} showToast={showToast} />;
@@ -651,11 +613,11 @@ function SiteHeader({ path, navigate, userSession, onUserLogout }) {
                       role="menuitem"
                       onClick={() => {
                         setUserMenuOpen(false);
-                        navigate("/merchant/deals");
+                        navigate("/create-deal");
                       }}
                     >
                       <Store size={15} />
-                      商户发布
+                      创建优惠
                     </button>
                     <button
                       type="button"
@@ -1083,7 +1045,7 @@ function DealRow({ deal, isFavorite, onCopy, onFavorite, onReport }) {
     <tr>
       <td data-label="优惠码">
         <button className="code-button" type="button" onClick={onCopy}>
-          <Clipboard size={14} aria-hidden="true" />
+          <Tag size={12} aria-hidden="true" />
           <span>{deal.code}</span>
         </button>
       </td>
@@ -1193,7 +1155,7 @@ function ReportDialog({ deal, onClose, onSubmit }) {
   );
 }
 
-function UserLogin({ navigate, onLogin }) {
+function UserLogin({ navigate, onLogin, nextPath = "/user/center" }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -1209,7 +1171,7 @@ function UserLogin({ navigate, onLogin }) {
         method: "POST",
         body: JSON.stringify({ email: email.trim().toLowerCase(), password }),
       });
-      onLogin(data?.user || data?.data?.user || data?.data);
+      onLogin(data?.user || data?.data?.user || data?.data, nextPath);
     } catch (requestError) {
       setError(requestError.message || "邮箱或密码不正确");
     } finally {
@@ -1239,6 +1201,13 @@ function UserLogin({ navigate, onLogin }) {
           placeholder="请输入密码"
           onChange={setPassword}
         />
+        <button
+          className="text-button auth-forgot-link"
+          type="button"
+          onClick={() => navigate("/user/forgot-password")}
+        >
+          忘记密码？
+        </button>
         {error && <p className="form-error">{error}</p>}
         <button className="primary-button full-width" type="submit" disabled={submitting}>
           {submitting ? "登录中..." : "登录"}
@@ -1255,7 +1224,7 @@ function UserLogin({ navigate, onLogin }) {
   );
 }
 
-function UserRegister({ navigate, onLogin }) {
+function UserRegister({ navigate }) {
   const [form, setForm] = useState({ email: "", password: "", confirmPassword: "" });
   const [error, setError] = useState("");
 
@@ -1283,7 +1252,15 @@ function UserRegister({ navigate, onLogin }) {
         method: "POST",
         body: JSON.stringify({ email, password: form.password }),
       });
-      onLogin(data?.user || data?.data?.user || data?.data);
+      const verificationUrl = data?.verificationUrl;
+      navigate(
+        verificationUrl
+          ? (() => {
+              const parsed = new URL(verificationUrl, window.location.origin);
+              return `${parsed.pathname}${parsed.search}`;
+            })()
+          : `/user/verify?email=${encodeURIComponent(email)}`,
+      );
     } catch (requestError) {
       setError(requestError.message || "注册失败");
     } finally {
@@ -1322,7 +1299,7 @@ function UserRegister({ navigate, onLogin }) {
         />
         {error && <p className="form-error">{error}</p>}
         <button className="primary-button full-width" type="submit" disabled={submitting}>
-          {submitting ? "注册中..." : "注册并登录"}
+          {submitting ? "注册中..." : "注册"}
           <UserPlus size={16} />
         </button>
         <p className="auth-switch">
@@ -1336,7 +1313,223 @@ function UserRegister({ navigate, onLogin }) {
   );
 }
 
-function UserCenter({ userSession, navigate, onLogout, showToast }) {
+function UserVerify({ navigate, onLogin, showToast }) {
+  const params = new URLSearchParams(window.location.search);
+  const token = params.get("token") || "";
+  const initialEmail = params.get("email") || "";
+  const [email, setEmail] = useState(initialEmail);
+  const [code, setCode] = useState("");
+  const [message, setMessage] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (!token) return undefined;
+    let cancelled = false;
+    setSubmitting(true);
+    apiRequest(`/api/auth/user/verify?token=${encodeURIComponent(token)}`)
+      .then((data) => {
+        if (cancelled) return;
+        showToast("邮箱验证成功", "success");
+        onLogin(data?.user || data?.data?.user || data?.data);
+      })
+      .catch((error) => {
+        if (!cancelled) setMessage(error.message || "邮箱验证失败");
+      })
+      .finally(() => {
+        if (!cancelled) setSubmitting(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
+
+  const verifyCode = async (event) => {
+    event.preventDefault();
+    setMessage("");
+    setSubmitting(true);
+    try {
+      const data = await apiRequest("/api/auth/user/verify-code", {
+        method: "POST",
+        body: JSON.stringify({ email: email.trim().toLowerCase(), code: code.trim() }),
+      });
+      showToast("邮箱验证成功", "success");
+      onLogin(data?.user || data?.data?.user || data?.data);
+    } catch (error) {
+      setMessage(error.message || "验证码验证失败");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const resend = async () => {
+    setMessage("");
+    try {
+      const data = await apiRequest("/api/auth/user/resend-verification", {
+        method: "POST",
+        body: JSON.stringify({ email: email.trim().toLowerCase() }),
+      });
+      showToast(data?.message || "验证邮件已发送", "success");
+    } catch (error) {
+      setMessage(error.message || "验证邮件发送失败");
+    }
+  };
+
+  return (
+    <AuthPage
+      eyebrow="邮箱验证"
+      title="激活你的账号"
+      description={token ? "正在验证邮箱，请稍候。" : "请前往邮箱点击验证链接，或输入邮件中的 6 位验证码。"}
+      navigate={navigate}
+    >
+      {token ? (
+        <div className="verify-panel">
+          <div className="verify-icon"><Mail size={22} /></div>
+          {submitting ? <p>正在验证邮箱...</p> : <p>{message}</p>}
+        </div>
+      ) : (
+        <form className="auth-form" onSubmit={verifyCode}>
+          <FormField
+            label="邮箱"
+            type="email"
+            value={email}
+            placeholder="name@example.com"
+            onChange={setEmail}
+          />
+          <FormField
+            label="验证码"
+            value={code}
+            placeholder="输入 6 位验证码"
+            onChange={setCode}
+          />
+          {message && <p className="form-error">{message}</p>}
+          <button className="primary-button full-width" type="submit" disabled={submitting}>
+            {submitting ? "验证中..." : "验证邮箱"}
+            <Check size={16} />
+          </button>
+          <button className="text-button full-width" type="button" onClick={resend}>
+            重新发送验证邮件
+          </button>
+        </form>
+      )}
+    </AuthPage>
+  );
+}
+
+function UserForgotPassword({ navigate, showToast }) {
+  const [email, setEmail] = useState("");
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  const submit = async (event) => {
+    event.preventDefault();
+    setError("");
+    setSubmitting(true);
+    try {
+      const data = await apiRequest("/api/auth/user/forgot-password", {
+        method: "POST",
+        body: JSON.stringify({ email: email.trim().toLowerCase() }),
+      });
+      setMessage(data?.message || "如果账号存在，重置密码邮件将会发送。");
+      showToast("重置密码邮件已发送", "success");
+    } catch (requestError) {
+      setError(requestError.message || "请求失败");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <AuthPage
+      eyebrow="账号安全"
+      title="忘记密码"
+      description="输入注册邮箱，我们会发送密码重置链接。"
+      navigate={navigate}
+    >
+      <form className="auth-form" onSubmit={submit}>
+        <FormField
+          label="邮箱"
+          type="email"
+          value={email}
+          placeholder="name@example.com"
+          onChange={setEmail}
+        />
+        {error && <p className="form-error">{error}</p>}
+        {message && <p className="form-success">{message}</p>}
+        <button className="primary-button full-width" type="submit" disabled={submitting}>
+          {submitting ? "发送中..." : "发送重置邮件"}
+          <Mail size={16} />
+        </button>
+        <button className="text-button full-width" type="button" onClick={() => navigate("/user/login")}>
+          返回登录
+        </button>
+      </form>
+    </AuthPage>
+  );
+}
+
+function UserResetPassword({ navigate, showToast }) {
+  const token = new URLSearchParams(window.location.search).get("token") || "";
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  const submit = async (event) => {
+    event.preventDefault();
+    setError("");
+    if (password.length < 8 || password !== confirmPassword) {
+      setError(password.length < 8 ? "密码至少需要 8 位" : "两次输入的密码不一致");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      await apiRequest("/api/auth/user/reset-password", {
+        method: "POST",
+        body: JSON.stringify({ token, password }),
+      });
+      showToast("密码已重置，请重新登录", "success");
+      navigate("/user/login");
+    } catch (requestError) {
+      setError(requestError.message || "密码重置失败");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <AuthPage
+      eyebrow="账号安全"
+      title="设置新密码"
+      description="请输入一个至少 8 位的新密码。"
+      navigate={navigate}
+    >
+      <form className="auth-form" onSubmit={submit}>
+        <FormField
+          label="新密码"
+          type="password"
+          value={password}
+          placeholder="至少 8 位"
+          onChange={setPassword}
+        />
+        <FormField
+          label="确认密码"
+          type="password"
+          value={confirmPassword}
+          placeholder="再次输入新密码"
+          onChange={setConfirmPassword}
+        />
+        {error && <p className="form-error">{error}</p>}
+        <button className="primary-button full-width" type="submit" disabled={submitting || !token}>
+          {submitting ? "保存中..." : "重置密码"}
+          <Check size={16} />
+        </button>
+      </form>
+    </AuthPage>
+  );
+}
+
+function UserCenter({ userSession, navigate, showToast }) {
   const [favoriteDeals, setFavoriteDeals] = useState([]);
   const [reports, setReports] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -1387,10 +1580,6 @@ function UserCenter({ userSession, navigate, onLogout, showToast }) {
             <h1>{userSession.email}</h1>
             <p>管理收藏的优惠码和你提交的内容举报。</p>
           </div>
-          <button className="outline-button" type="button" onClick={onLogout}>
-            <LogOut size={16} />
-            退出登录
-          </button>
         </div>
       </section>
 
@@ -1953,7 +2142,7 @@ function AdminDashboard({ refreshKey, navigate }) {
               <strong>正常</strong>
             </div>
             <div>
-              <span><CheckCircle2 size={16} />商户发布</span>
+              <span><CheckCircle2 size={16} />创建优惠</span>
               <strong>正常</strong>
             </div>
             <div>
@@ -2664,7 +2853,7 @@ function AdminWebsiteFilter({ refreshKey, showToast }) {
       <AdminPageHeader
         eyebrow="风险控制"
         title="网站过滤"
-        description="维护违法违规网站黑名单，命中后将阻止商户注册并隐藏相关公开优惠码。"
+        description="维护违法违规网站黑名单，命中后将阻止用户注册并隐藏相关公开优惠码。"
         action={
           <span className="admin-page-signal">
             <ShieldAlert size={16} />
@@ -3585,14 +3774,14 @@ function AdminSettings({ session, showToast }) {
         <AdminPanel title="公开站点">
           <label className="admin-toggle-row">
             <span>
-              <strong>允许新商户注册</strong>
-              <small>关闭后，公开站点将暂时停止创建商户账号。</small>
+              <strong>允许用户注册</strong>
+              <small>关闭后，公开站点将暂时停止创建新账号。</small>
             </span>
             <input
               type="checkbox"
-              checked={settings.allowMerchantRegistration}
+              checked={settings.allowUserRegistration}
               onChange={(event) =>
-                setSettings({ ...settings, allowMerchantRegistration: event.target.checked })
+                setSettings({ ...settings, allowUserRegistration: event.target.checked })
               }
             />
           </label>
@@ -3627,8 +3816,8 @@ function AdminSettings({ session, showToast }) {
           </div>
         </AdminPanel>
         <AdminPanel
-          title="商户发布限制"
-          description="控制单个商户可保留和公开展示的优惠码数量。"
+          title="创建优惠限制"
+          description="控制单个用户可保留和公开展示的优惠码数量。"
         >
           <div className="admin-setting-fields">
             <label className="admin-field">
@@ -3729,211 +3918,12 @@ function AdminEmptyState({ label }) {
   );
 }
 
-function MerchantRegister({ navigate, showToast }) {
-  const [form, setForm] = useState({
-    email: "",
-    password: "",
-  });
-  const [error, setError] = useState("");
-
-  const [submitting, setSubmitting] = useState(false);
-
-  const submit = async (event) => {
-    event.preventDefault();
-    setError("");
-    const email = form.email.trim().toLowerCase();
-    if (!email || !form.password) {
-      setError("请填写完整信息");
-      return;
-    }
-    if (form.password.length < 8) {
-      setError("密码至少需要 8 位");
-      return;
-    }
-    setSubmitting(true);
-    try {
-      const data = await apiRequest("/api/auth/merchant/register", {
-        method: "POST",
-        body: JSON.stringify({ email, password: form.password }),
-      });
-      showToast(data?.message || "注册成功，请先完成邮箱验证", "success");
-      const verificationUrl = data?.verificationUrl;
-      navigate(
-        verificationUrl
-          ? new URL(verificationUrl).pathname + new URL(verificationUrl).search
-          : `/merchant/verify?email=${encodeURIComponent(email)}`,
-      );
-    } catch (requestError) {
-      setError(requestError.message || "注册失败");
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  return (
-    <AuthPage
-      eyebrow="商户入口"
-      title="发布你的优惠码"
-      description="注册并验证邮箱后，在发布页面填写商户名称和官网地址。"
-      navigate={navigate}
-    >
-      <form className="auth-form" onSubmit={submit}>
-        <FormField
-          label="邮箱"
-          type="email"
-          value={form.email}
-          placeholder="name@company.com"
-          onChange={(value) => setForm({ ...form, email: value })}
-        />
-        <FormField
-          label="密码"
-          type="password"
-          value={form.password}
-          placeholder="至少 8 位"
-          onChange={(value) => setForm({ ...form, password: value })}
-        />
-        {error && <p className="form-error">{error}</p>}
-        <button className="primary-button full-width" type="submit" disabled={submitting}>
-          {submitting ? "注册中..." : "创建商户账号"}
-          <ArrowUpRight size={16} />
-        </button>
-        <p className="auth-switch">
-          已有账号？
-          <button type="button" onClick={() => navigate("/merchant/login")}>
-            商户登录
-          </button>
-        </p>
-      </form>
-    </AuthPage>
-  );
-}
-
-function MerchantLogin({ navigate, onLogin, showToast }) {
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
-
-  const [submitting, setSubmitting] = useState(false);
-
-  const submit = async (event) => {
-    event.preventDefault();
-    setError("");
-    setSubmitting(true);
-    try {
-      const data = await apiRequest("/api/auth/merchant/login", {
-        method: "POST",
-        body: JSON.stringify({ email: email.trim().toLowerCase(), password }),
-      });
-      showToast("登录成功", "success");
-      onLogin(data?.merchant || data?.data?.merchant || data?.data);
-    } catch (requestError) {
-      setError(requestError.message || "邮箱或密码不正确");
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  return (
-    <AuthPage
-      eyebrow="商户入口"
-      title="商户登录"
-      description="登录后管理你发布的优惠码。"
-      navigate={navigate}
-    >
-      <form className="auth-form" onSubmit={submit}>
-        <FormField
-          label="邮箱"
-          type="email"
-          value={email}
-          placeholder="name@company.com"
-          onChange={setEmail}
-        />
-        <FormField
-          label="密码"
-          type="password"
-          value={password}
-          placeholder="请输入密码"
-          onChange={setPassword}
-        />
-        {error && <p className="form-error">{error}</p>}
-        <button className="primary-button full-width" type="submit" disabled={submitting}>
-          {submitting ? "登录中..." : "登录商户中心"}
-          <LogIn size={16} />
-        </button>
-        <p className="auth-switch">
-          还没有账号？
-          <button type="button" onClick={() => navigate("/merchant/register")}>
-            注册商户
-          </button>
-        </p>
-      </form>
-    </AuthPage>
-  );
-}
-
-function MerchantVerify({ navigate, onLogin, showToast }) {
-  const params = new URLSearchParams(window.location.search);
-  const token = params.get("token") || "";
-  const email = params.get("email") || "";
-  const [message, setMessage] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-
-  const verify = async () => {
-    if (!token) {
-      setMessage("验证链接无效，请从验证邮件进入。");
-      return;
-    }
-    setSubmitting(true);
-    try {
-      const data = await apiRequest(`/api/auth/merchant/verify?token=${encodeURIComponent(token)}`);
-      showToast("邮箱验证成功", "success");
-      onLogin(data?.merchant || data?.data?.merchant || data?.data);
-    } catch (requestError) {
-      setMessage(requestError.message || "邮箱验证失败");
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  return (
-    <AuthPage
-      eyebrow="邮箱验证"
-      title="验证你的邮箱"
-      description={
-        token
-          ? "点击下方按钮完成邮箱验证。"
-          : email
-            ? `验证邮件已发送到 ${email}，请点击邮件中的链接。`
-            : "请从验证邮件进入此页面。"
-      }
-      navigate={navigate}
-    >
-      <div className="verify-panel">
-        <div className="verify-icon">
-          <Mail size={22} />
-        </div>
-        <p>{token ? "验证成功后会自动登录并进入优惠码发布页面。" : "完成验证后即可登录并发布优惠码。"}</p>
-        {message && <p className="form-error">{message}</p>}
-        {token && (
-          <button className="primary-button full-width" type="button" onClick={verify} disabled={submitting}>
-            {submitting ? "验证中..." : "验证邮箱"}
-            <Check size={16} />
-          </button>
-        )}
-        <button className="text-button full-width" type="button" onClick={() => navigate("/merchant/login")}>
-          返回登录
-        </button>
-      </div>
-    </AuthPage>
-  );
-}
-
 function MerchantDashboard({ session, navigate, showToast }) {
   const [account, setAccount] = useState({
     id: session.accountId,
     email: session.email,
-    storeName: session.storeName || "",
-    website: "",
+    storeName: session.merchant?.storeName || session.storeName || "",
+    website: session.merchant?.website || "",
   });
   const [deals, setDeals] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -3943,7 +3933,7 @@ function MerchantDashboard({ session, navigate, showToast }) {
 
   const refresh = () => {
     setLoading(true);
-    return apiRequest("/api/merchant/deals")
+    return apiRequest("/api/user/deals")
       .then((data) => {
         const merchant = data?.merchant;
         if (merchant) {
@@ -3983,7 +3973,7 @@ function MerchantDashboard({ session, navigate, showToast }) {
     setSubmitting(true);
     try {
       const data = await apiRequest(
-        editing ? `/api/merchant/deals/${editing}` : "/api/merchant/deals",
+        editing ? `/api/user/deals/${editing}` : "/api/user/deals",
         {
           method: editing ? "PUT" : "POST",
           body: JSON.stringify({
@@ -4028,7 +4018,7 @@ function MerchantDashboard({ session, navigate, showToast }) {
 
   const toggleDeal = async (id) => {
     try {
-      await apiRequest(`/api/merchant/deals/${id}/toggle`, { method: "POST" });
+      await apiRequest(`/api/user/deals/${id}/toggle`, { method: "POST" });
       await refresh();
       showToast("优惠码状态已更新", "success");
     } catch (error) {
