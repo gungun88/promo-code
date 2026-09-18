@@ -4,6 +4,9 @@ import { fileURLToPath } from "node:url";
 import pg from "pg";
 
 const { Pool } = pg;
+// PostgreSQL DATE values are calendar dates, not instants in time. Keep the
+// original YYYY-MM-DD string so timezone conversion cannot shift the day.
+pg.types.setTypeParser(1082, (value) => value);
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const databaseUrl =
   process.env.DATABASE_URL ||

@@ -1,10 +1,12 @@
 import { createServer } from "node:http";
-import { createHash, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, randomInt, scryptSync, timingSafeEqual } from "node:crypto";
 import nodemailer from "nodemailer";
 import { closeDatabase, initDatabase, query, withTransaction } from "./db.mjs";
 
 const PORT = Number(process.env.API_PORT || 8000);
 const NODE_ENV = process.env.NODE_ENV || "development";
+const BUSINESS_TIME_ZONE = "Asia/Shanghai";
+const BUSINESS_DATE_SQL = `(CURRENT_TIMESTAMP AT TIME ZONE '${BUSINESS_TIME_ZONE}')::date`;
 const SESSION_TTL_SECONDS = 8 * 60 * 60;
 const MAX_BODY_BYTES = 1_048_576;
 const VERIFY_CODE_MAX_ATTEMPTS = 5;
@@ -12,6 +14,14 @@ const VERIFY_CODE_LOCK_SECONDS = 15 * 60;
 const VERIFICATION_RESEND_COOLDOWN_SECONDS = 60;
 const PASSWORD_RESET_COOLDOWN_SECONDS = 60;
 const AUTH_IP_WINDOW_MS = 15 * 60 * 1000;
+const USER_LOGIN_IP_MAX_ATTEMPTS = 12;
+const ADMIN_LOGIN_IP_MAX_ATTEMPTS = 6;
+const MAX_STORE_NAME_LENGTH = 120;
+const MAX_CODE_LENGTH = 80;
+const MAX_OFFER_LENGTH = 240;
+const MAX_TERMS_LENGTH = 500;
+const MAX_REPORT_REASON_LENGTH = 500;
+const MAX_WEBSITE_LENGTH = 2048;
 const authRateBuckets = new Map();
 const ADMIN_EMAIL = String(
   process.env.ADMIN_EMAIL || (NODE_ENV === "production" ? "" : "admin@promo-code.local"),
@@ -72,20 +82,49 @@ function makeToken() {
   return randomBytes(32).toString("hex");
 }
 
+function makeVerificationCode() {
+  return String(randomInt(100000, 1000000));
+}
+
+function isUuid(value) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    String(value || ""),
+  );
+}
+
+function hasLength(value, max) {
+  return typeof value === "string" && value.length <= max;
+}
+
 function getClientAddress(request) {
   const remoteAddress = request.socket?.remoteAddress || "unknown";
+  const realIp = String(request.headers["x-real-ip"] || "").trim();
   const forwardedFor = String(request.headers["x-forwarded-for"] || "")
     .split(",")[0]
     .trim();
-  if (
-    forwardedFor &&
-    (remoteAddress === "127.0.0.1" ||
-      remoteAddress === "::1" ||
-      remoteAddress === "::ffff:127.0.0.1")
-  ) {
-    return forwardedFor;
-  }
+  // The API is only exposed to the local reverse proxy in production.
+  // Nginx passes the real client address through these headers; using only
+  // the container peer address would put every visitor in one rate-limit bucket.
+  if (realIp) return realIp;
+  if (forwardedFor) return forwardedFor;
   return remoteAddress;
+}
+
+async function recordDealEvent(request, dealId, eventType, userId = null) {
+  try {
+    await query(
+      `INSERT INTO deal_events (promo_code_id, event_type, user_id, ip_hash)
+       VALUES ($1, $2, $3, $4)`,
+      [dealId, eventType, userId, hashToken(getClientAddress(request))],
+    );
+  } catch (error) {
+    // Analytics must never turn a successful user action into a failed request.
+    console.error("Failed to record deal event", {
+      dealId,
+      eventType,
+      error: error?.message || error,
+    });
+  }
 }
 
 function consumeAuthIpLimit(request, action, maxAttempts) {
@@ -116,6 +155,7 @@ function isEmail(value) {
 function normalizeWebsite(value) {
   const input = String(value || "").trim();
   if (!input) throw new Error("官网地址不能为空");
+  if (input.length > MAX_WEBSITE_LENGTH) throw new Error("官网地址过长");
   const parsed = new URL(input);
   if (parsed.protocol !== "https:") throw new Error("官网地址必须使用 HTTPS");
   if (!parsed.hostname || !/^[a-z0-9.-]+$/i.test(parsed.hostname)) {
@@ -133,13 +173,45 @@ function toIso(value) {
 }
 
 function dateOnly(value) {
-  return value ? new Date(value).toISOString().slice(0, 10) : "";
+  if (!value) return "";
+  if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}/.test(value)) {
+    return value.slice(0, 10);
+  }
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "" : date.toISOString().slice(0, 10);
+}
+
+function getBusinessDate(date = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: BUSINESS_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}`;
 }
 
 function parseDate(value) {
-  if (!value) return null;
-  const date = new Date(`${value}T00:00:00Z`);
-  return Number.isNaN(date.getTime()) ? null : value;
+  const normalized = String(value || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(normalized)) return null;
+
+  const [year, month, day] = normalized.split("-").map(Number);
+  if (year < 1000 || year > 9999 || month < 1 || month > 12 || day < 1 || day > 31) {
+    return null;
+  }
+
+  const date = new Date(0);
+  date.setUTCFullYear(year, month - 1, day);
+  date.setUTCHours(0, 0, 0, 0);
+  if (
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() !== month - 1 ||
+    date.getUTCDate() !== day
+  ) {
+    return null;
+  }
+  return normalized;
 }
 
 function parsePagination(url, defaultLimit = 20, maxLimit = 100) {
@@ -201,8 +273,78 @@ function dealFromRow(row) {
     updatedAt: toIso(row.updated_at),
     ownerEmail: row.owner_email,
     ownerId: row.merchant_id,
+    placementId: row.placement_id || null,
+    placementType: row.placement_type || null,
+    placementPriority: row.placement_priority === null || row.placement_priority === undefined
+      ? null
+      : Number(row.placement_priority),
+    sponsorName: row.sponsor_name || "",
+    placementStartsAt: dateOnly(row.placement_starts_at),
+    placementEndsAt: dateOnly(row.placement_ends_at),
+    placementStatus: row.placement_status || null,
+    isSponsored: row.placement_type === "sponsored" && row.placement_status === "active",
   };
 }
+
+function placementFromRow(row) {
+  if (!row) return null;
+  return {
+    id: row.placement_id || row.id,
+    dealId: row.promo_code_id,
+    code: row.code,
+    offer: row.offer,
+    storeName: row.store_name,
+    website: row.website,
+    ownerEmail: row.owner_email,
+    placementType: row.placement_type,
+    priority: Number(row.priority || 0),
+    sponsorName: row.sponsor_name || "",
+    startsAt: dateOnly(row.starts_at),
+    endsAt: dateOnly(row.ends_at),
+    status: row.placement_status || row.status,
+    note: row.note || "",
+    createdBy: row.created_by_email || "",
+    createdAt: toIso(row.placement_created_at || row.created_at),
+    updatedAt: toIso(row.placement_updated_at || row.updated_at),
+  };
+}
+
+const PUBLIC_PLACEMENT_JOIN = `
+      LEFT JOIN LATERAL (
+        SELECT pl.*
+          FROM promo_code_placements pl
+         WHERE pl.promo_code_id = p.id
+           AND pl.status = 'active'
+           AND pl.starts_at <= ${BUSINESS_DATE_SQL}
+           AND (pl.ends_at IS NULL OR pl.ends_at >= ${BUSINESS_DATE_SQL})
+         ORDER BY
+           CASE WHEN pl.placement_type = 'sponsored' THEN 0 ELSE 1 END,
+           pl.priority DESC,
+           pl.ends_at ASC NULLS LAST,
+           pl.created_at DESC
+         LIMIT 1
+      ) placement ON true`;
+
+const ADMIN_PLACEMENT_JOIN = `
+      LEFT JOIN LATERAL (
+        SELECT pl.*
+          FROM promo_code_placements pl
+         WHERE pl.promo_code_id = p.id
+         ORDER BY
+           CASE WHEN pl.status = 'active' THEN 0 ELSE 1 END,
+           pl.starts_at DESC,
+           pl.created_at DESC
+         LIMIT 1
+      ) placement ON true`;
+
+const DEAL_PLACEMENT_COLUMNS = `
+       placement.id AS placement_id,
+       placement.placement_type,
+       placement.priority AS placement_priority,
+       placement.sponsor_name,
+       placement.starts_at AS placement_starts_at,
+       placement.ends_at AS placement_ends_at,
+       placement.status AS placement_status`;
 
 function reportFromRow(row) {
   return {
@@ -533,16 +675,15 @@ function normalizeAnnouncement(value = {}) {
 
 function isAnnouncementActive(announcement) {
   if (!announcement.enabled || !announcement.content) return false;
-  const now = new Date();
-  const startsAt = announcement.startsAt
-    ? new Date(`${announcement.startsAt}T00:00:00`)
-    : null;
-  const endsAt = announcement.endsAt
-    ? new Date(`${announcement.endsAt}T23:59:59`)
-    : null;
+  const startsAt = announcement.startsAt ? parseDate(announcement.startsAt) : null;
+  const endsAt = announcement.endsAt ? parseDate(announcement.endsAt) : null;
+  if ((announcement.startsAt && !startsAt) || (announcement.endsAt && !endsAt)) {
+    return false;
+  }
+  const businessDate = getBusinessDate();
   return (
-    (!startsAt || Number.isNaN(startsAt.getTime()) || startsAt <= now) &&
-    (!endsAt || Number.isNaN(endsAt.getTime()) || endsAt >= now)
+    (!startsAt || startsAt <= businessDate) &&
+    (!endsAt || endsAt >= businessDate)
   );
 }
 
@@ -556,11 +697,158 @@ function isHttpUrl(value) {
 }
 
 async function addAuditLog(admin, action, targetType, targetId, description) {
-  await query(
-    `INSERT INTO admin_audit_logs (admin_id, action, target_type, target_id, description)
-     VALUES ($1, $2, $3, $4, $5)`,
-    [admin?.id || null, action, targetType, String(targetId), description],
+  try {
+    await query(
+      `INSERT INTO admin_audit_logs (admin_id, action, target_type, target_id, description)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [admin?.id || null, action, targetType, String(targetId), description],
+    );
+  } catch (error) {
+    // Audit logging must not turn a completed admin mutation into a false failure.
+    console.error("Failed to write admin audit log", {
+      action,
+      targetType,
+      targetId,
+      error: error?.message || error,
+    });
+  }
+}
+
+async function cleanupExpiredRecords() {
+  try {
+    await Promise.all([
+      query("DELETE FROM sessions WHERE expires_at <= now()"),
+      query("DELETE FROM verification_tokens WHERE expires_at <= now() OR used_at IS NOT NULL"),
+      query("DELETE FROM password_reset_tokens WHERE expires_at <= now() OR used_at IS NOT NULL"),
+    ]);
+  } catch (error) {
+    console.error("Failed to clean up expired authentication records", error?.message || error);
+  }
+}
+
+function normalizePlacementPayload(body = {}, fallback = {}) {
+  const placementType = String(
+    body.placementType ?? fallback.placementType ?? "sponsored",
+  ).trim();
+  if (!["editorial", "sponsored"].includes(placementType)) {
+    throw httpError(400, "置顶类型不正确");
+  }
+
+  const priority = Number(body.priority ?? fallback.priority ?? 100);
+  if (!Number.isInteger(priority) || priority < 0 || priority > 1000) {
+    throw httpError(400, "优先级必须是 0 到 1000 之间的整数");
+  }
+
+  const startsAtValue = String(
+    body.startsAt ?? fallback.startsAt ?? getBusinessDate(),
+  ).trim();
+  const startsAt = parseDate(startsAtValue);
+  if (!startsAt) throw httpError(400, "开始日期格式不正确");
+
+  const endsAtValue = String(body.endsAt ?? fallback.endsAt ?? "").trim();
+  const endsAt = endsAtValue ? parseDate(endsAtValue) : null;
+  if (endsAtValue && !endsAt) throw httpError(400, "结束日期格式不正确");
+  if (endsAt && endsAt < startsAt) {
+    throw httpError(400, "结束日期不能早于开始日期");
+  }
+
+  const status = String(body.status ?? fallback.status ?? "active").trim();
+  if (!["active", "paused"].includes(status)) {
+    throw httpError(400, "置顶状态不正确");
+  }
+
+  const sponsorName = String(body.sponsorName ?? fallback.sponsorName ?? "").trim();
+  const note = String(body.note ?? fallback.note ?? "").trim();
+  if (sponsorName.length > 80) throw httpError(400, "赞助名称不能超过 80 个字符");
+  if (note.length > 500) throw httpError(400, "备注不能超过 500 个字符");
+  if (placementType === "sponsored" && !sponsorName) {
+    throw httpError(400, "赞助置顶需要填写赞助名称");
+  }
+
+  return {
+    placementType,
+    priority,
+    sponsorName,
+    startsAt,
+    endsAt,
+    status,
+    note,
+  };
+}
+
+function validatePlacementWindow(dealEndAt, placement) {
+  const businessDate = getBusinessDate();
+  const normalizedDealEndAt = dateOnly(dealEndAt);
+  if (normalizedDealEndAt && normalizedDealEndAt < businessDate) {
+    throw httpError(400, "已过期的优惠码不能设置置顶推广");
+  }
+  if (normalizedDealEndAt && placement.startsAt > normalizedDealEndAt) {
+    throw httpError(400, "置顶开始日期不能晚于优惠码截止日期");
+  }
+  if (placement.status === "active" && placement.endsAt && placement.endsAt < businessDate) {
+    throw httpError(400, "启用中的置顶结束日期不能早于今天");
+  }
+}
+
+async function lockPlacementMerchant(client, dealId) {
+  const result = await client.query(
+    "SELECT merchant_id FROM promo_codes WHERE id = $1",
+    [dealId],
   );
+  if (!result.rowCount) {
+    throw httpError(404, "优惠码不存在");
+  }
+  await client.query("SELECT id FROM merchants WHERE id = $1 FOR UPDATE", [
+    result.rows[0].merchant_id,
+  ]);
+  const lockedDeal = await client.query(
+    "SELECT id FROM promo_codes WHERE id = $1 FOR UPDATE",
+    [dealId],
+  );
+  if (!lockedDeal.rowCount) {
+    throw httpError(404, "优惠码不存在");
+  }
+}
+
+async function ensureSponsoredPlacementAvailable(client, dealId, placement, placementId = null) {
+  if (placement.placementType !== "sponsored" || placement.status !== "active") return;
+  const result = await client.query(
+    `SELECT pl.id
+       FROM promo_code_placements pl
+       JOIN promo_codes p ON p.id = pl.promo_code_id
+      WHERE p.merchant_id = (SELECT merchant_id FROM promo_codes WHERE id = $1)
+        AND pl.placement_type = 'sponsored'
+        AND pl.status = 'active'
+        AND ($4::uuid IS NULL OR pl.id <> $4::uuid)
+        AND pl.starts_at <= COALESCE($3::date, '9999-12-31'::date)
+        AND COALESCE(pl.ends_at, '9999-12-31'::date) >= $2::date
+      LIMIT 1`,
+    [dealId, placement.startsAt, placement.endsAt, placementId],
+  );
+  if (result.rowCount) {
+    throw httpError(409, "同一商户在同一时间只能有一个赞助置顶优惠码");
+  }
+}
+
+async function getPlacementRecord(id) {
+  if (!isUuid(id)) return null;
+  const result = await query(
+    `SELECT pl.id AS placement_id, pl.promo_code_id, pl.placement_type,
+            pl.priority, pl.sponsor_name, pl.starts_at, pl.ends_at,
+            pl.status AS placement_status, pl.note,
+            pl.created_by, pl.created_at AS placement_created_at,
+            pl.updated_at AS placement_updated_at,
+            p.code, p.offer, m.store_name, m.website, m.email AS owner_email,
+            p.end_at AS deal_end_at,
+            a.email AS created_by_email
+       FROM promo_code_placements pl
+       JOIN promo_codes p ON p.id = pl.promo_code_id
+       JOIN merchants m ON m.id = p.merchant_id
+       LEFT JOIN admin_users a ON a.id = pl.created_by
+      WHERE pl.id = $1`,
+    [id],
+  );
+  return result.rows[0] || null;
 }
 
 async function getActiveFilters() {
@@ -591,6 +879,44 @@ function matchesFilter(website, filters) {
       (hostname === filter.hostname || hostname.endsWith(`.${filter.hostname}`))
     );
   });
+}
+
+async function getPublicDealById(dealId) {
+  if (!isUuid(dealId)) return null;
+  const result = await query(
+    `SELECT p.id
+       FROM promo_codes p
+       JOIN merchants m ON m.id = p.merchant_id
+      WHERE p.id = $1
+        AND p.status = 'published'
+        AND p.admin_status <> 'removed'
+        AND m.email_verified = true
+        AND m.status = 'active'
+        AND m.admin_status <> 'suspended'
+        AND (p.end_at IS NULL OR p.end_at >= ${BUSINESS_DATE_SQL})
+        AND NOT EXISTS (
+          SELECT 1
+            FROM website_filters f
+           WHERE f.status = 'active'
+             AND (
+               (
+                 f.match_type = 'keyword'
+                 AND f.keyword <> ''
+                 AND lower(m.website) LIKE '%' || lower(f.keyword) || '%'
+               )
+               OR (
+                 f.match_type = 'domain'
+                 AND f.hostname <> ''
+                 AND (
+                   lower(regexp_replace(regexp_replace(regexp_replace(regexp_replace(m.website, '^https?://', ''), '^www\\.', ''), '/.*$', ''), ':.*$', '')) = lower(f.hostname)
+                   OR lower(regexp_replace(regexp_replace(regexp_replace(regexp_replace(m.website, '^https?://', ''), '^www\\.', ''), '/.*$', ''), ':.*$', '')) LIKE '%.' || lower(f.hostname)
+                 )
+               )
+             )
+        )`,
+    [dealId],
+  );
+  return result.rows[0] || null;
 }
 
 async function sendMail(to, subject, text, html) {
@@ -714,6 +1040,125 @@ async function ensureDevelopmentAccounts() {
         terms: "本地演示数据，仅限符合条件的用户",
         endAt: "2027-01-31",
       },
+      {
+        code: "SAVE10",
+        offer: "全场商品 9 折",
+        discountValue: 10,
+        terms: "本地演示数据，结算页以官网规则为准",
+        endAt: "2026-10-31",
+      },
+      {
+        code: "SAVE15",
+        offer: "订阅方案额外 85 折",
+        discountValue: 15,
+        terms: "本地演示数据，仅限年度方案",
+        endAt: "2026-11-15",
+      },
+      {
+        code: "TRYFREE",
+        offer: "新用户首月免费",
+        discountValue: 100,
+        terms: "本地演示数据，需绑定支付方式",
+        endAt: "2026-12-15",
+      },
+      {
+        code: "NEWUSER25",
+        offer: "新用户专享 75 折",
+        discountValue: 25,
+        terms: "本地演示数据，每个账号限用一次",
+        endAt: "2026-12-20",
+      },
+      {
+        code: "PLUS20",
+        offer: "Plus 会员 8 折",
+        discountValue: 20,
+        terms: "本地演示数据，限新开通会员",
+        endAt: "2027-01-15",
+      },
+      {
+        code: "TEAM30",
+        offer: "团队方案立减 30%",
+        discountValue: 30,
+        terms: "本地演示数据，适用于团队订阅",
+        endAt: "2027-01-31",
+      },
+      {
+        code: "EDU25",
+        offer: "教育用户专享 75 折",
+        discountValue: 25,
+        terms: "本地演示数据，需要验证教育身份",
+        endAt: "2027-02-28",
+      },
+      {
+        code: "ANNUAL15",
+        offer: "年度订阅额外 85 折",
+        discountValue: 15,
+        terms: "本地演示数据，仅适用于年度付款",
+        endAt: "2027-03-31",
+      },
+      {
+        code: "PRO20",
+        offer: "升级 Pro 方案 8 折",
+        discountValue: 20,
+        terms: "本地演示数据，仅限首次升级",
+        endAt: "2027-04-30",
+      },
+      {
+        code: "FALL25",
+        offer: "秋季活动 75 折",
+        discountValue: 25,
+        terms: "本地演示数据，活动期间有效",
+        endAt: "2026-10-20",
+      },
+      {
+        code: "LAUNCH15",
+        offer: "新功能上线 85 折",
+        discountValue: 15,
+        terms: "本地演示数据，部分服务不适用",
+        endAt: "2026-11-05",
+      },
+      {
+        code: "BONUS10",
+        offer: "额外赠送 10% 使用额度",
+        discountValue: 10,
+        terms: "本地演示数据，不能与其他优惠同享",
+        endAt: "2026-12-05",
+      },
+      {
+        code: "VIP30",
+        offer: "VIP 用户专享 7 折",
+        discountValue: 30,
+        terms: "本地演示数据，仅限符合条件的会员",
+        endAt: "2027-02-15",
+      },
+      {
+        code: "STARTER18",
+        offer: "入门方案 82 折",
+        discountValue: 18,
+        terms: "本地演示数据，限入门方案使用",
+        endAt: "2027-03-15",
+      },
+      {
+        code: "YEARLY22",
+        offer: "年付方案立减 22%",
+        discountValue: 22,
+        terms: "本地演示数据，按年付款时生效",
+        endAt: "2027-04-15",
+      },
+      {
+        code: "FLASH35",
+        offer: "限时闪购 65 折",
+        discountValue: 35,
+        terms: "本地演示数据，数量有限先到先得",
+        endAt: "2026-10-10",
+      },
+      {
+        code: "EXTRA12",
+        offer: "全站额外 88 折",
+        discountValue: 12,
+        terms: "本地演示数据，结算时输入优惠码",
+        endAt: "2027-05-31",
+      },
     ];
 
     for (const deal of demoDeals) {
@@ -751,7 +1196,7 @@ async function getPublicDeals(url, request) {
     "m.email_verified = true",
     "m.status = 'active'",
     "m.admin_status <> 'suspended'",
-    "(p.end_at IS NULL OR p.end_at >= CURRENT_DATE)",
+    `(p.end_at IS NULL OR p.end_at >= ${BUSINESS_DATE_SQL})`,
     `NOT EXISTS (
       SELECT 1
         FROM website_filters f
@@ -787,13 +1232,34 @@ async function getPublicDeals(url, request) {
       ? "p.end_at ASC NULLS LAST, p.created_at DESC"
       : sort === "latest"
         ? "p.created_at DESC"
-        : "p.discount_value DESC, p.created_at DESC";
+        : `CASE
+             WHEN placement.placement_type = 'sponsored' THEN 0
+             WHEN placement.placement_type = 'editorial' THEN 1
+             ELSE 2
+           END,
+           COALESCE(placement.priority, 0) DESC,
+           (
+             p.copy_count * 40
+             + GREATEST(
+                 0,
+                 25 - (${BUSINESS_DATE_SQL} - (p.created_at AT TIME ZONE '${BUSINESS_TIME_ZONE}')::date)
+               )
+             + CASE
+                 WHEN p.end_at IS NULL THEN 0
+                 ELSE GREATEST(0, 15 - (p.end_at - ${BUSINESS_DATE_SQL}))
+               END
+             + CASE WHEN p.terms <> '' THEN 5 ELSE 0 END
+             + CASE WHEN m.store_name <> '' AND m.website <> '' THEN 5 ELSE 0 END
+           ) DESC,
+           p.created_at DESC`;
   const whereSql = conditions.join(" AND ");
   params.push(limit, offset);
   const result = await query(
-    `SELECT p.*, m.store_name, m.website, m.email AS owner_email
+    `SELECT p.*, m.store_name, m.website, m.email AS owner_email,
+            ${DEAL_PLACEMENT_COLUMNS}
        FROM promo_codes p
        JOIN merchants m ON m.id = p.merchant_id
+       ${PUBLIC_PLACEMENT_JOIN}
       WHERE ${whereSql}
       ORDER BY ${orderBy}
       LIMIT $${params.length - 1} OFFSET $${params.length}`,
@@ -880,17 +1346,51 @@ async function handleRequest(request, response) {
 
   const copyMatch = path.match(/^\/api\/deals\/([^/]+)\/copy$/);
   if (request.method === "POST" && copyMatch) {
+    if (!isUuid(copyMatch[1])) {
+      sendError(response, 400, "优惠码 ID 格式不正确", request);
+      return;
+    }
+    const user = await getUser(request);
     const result = await query(
-      `UPDATE promo_codes
+      `UPDATE promo_codes p
           SET copy_count = copy_count + 1, updated_at = now()
-        WHERE id = $1
-      RETURNING copy_count`,
+        FROM merchants m
+       WHERE p.id = $1
+         AND p.merchant_id = m.id
+         AND p.status = 'published'
+         AND p.admin_status <> 'removed'
+         AND m.email_verified = true
+         AND m.status = 'active'
+         AND m.admin_status <> 'suspended'
+         AND (p.end_at IS NULL OR p.end_at >= ${BUSINESS_DATE_SQL})
+         AND NOT EXISTS (
+           SELECT 1
+             FROM website_filters f
+            WHERE f.status = 'active'
+              AND (
+                (
+                  f.match_type = 'keyword'
+                  AND f.keyword <> ''
+                  AND lower(m.website) LIKE '%' || lower(f.keyword) || '%'
+                )
+                OR (
+                  f.match_type = 'domain'
+                  AND f.hostname <> ''
+                  AND (
+                    lower(regexp_replace(regexp_replace(regexp_replace(regexp_replace(m.website, '^https?://', ''), '^www\\.', ''), '/.*$', ''), ':.*$', '')) = lower(f.hostname)
+                    OR lower(regexp_replace(regexp_replace(regexp_replace(regexp_replace(m.website, '^https?://', ''), '^www\\.', ''), '/.*$', ''), ':.*$', '')) LIKE '%.' || lower(f.hostname)
+                  )
+                )
+              )
+         )
+      RETURNING p.copy_count`,
       [copyMatch[1]],
     );
     if (!result.rowCount) {
-      sendError(response, 404, "优惠码不存在", request);
+      sendError(response, 404, "优惠码不存在或当前不可用", request);
       return;
     }
+    await recordDealEvent(request, copyMatch[1], "copy", user?.id || null);
     sendJson(response, 200, { copyCount: result.rows[0].copy_count }, request);
     return;
   }
@@ -926,7 +1426,7 @@ async function handleRequest(request, response) {
     }
     const record = createPasswordRecord(password);
     const token = makeToken();
-    const verificationCode = String(Math.floor(100000 + Math.random() * 900000));
+    const verificationCode = makeVerificationCode();
     try {
       const result = await withTransaction(async (client) => {
         const inserted = await client.query(
@@ -947,13 +1447,22 @@ async function handleRequest(request, response) {
            VALUES ($1, $2, $3, now() + interval '24 hours')`,
           [hashToken(token), inserted.rows[0].id, verificationCode],
         );
-        await client.query(
-          "UPDATE users SET verification_sent_at = now() WHERE id = $1",
-          [inserted.rows[0].id],
-        );
-        const verificationUrl = await sendUserVerificationEmail(email, token, verificationCode);
-        return { user: inserted.rows[0], verificationUrl };
+        return { user: inserted.rows[0] };
       });
+      let verificationUrl = "";
+      try {
+        verificationUrl = await sendUserVerificationEmail(email, token, verificationCode);
+        await query("UPDATE users SET verification_sent_at = now() WHERE id = $1", [
+          result.user.id,
+        ]);
+      } catch (mailError) {
+        await query(
+          "UPDATE verification_tokens SET used_at = now() WHERE token_hash = $1",
+          [hashToken(token)],
+        );
+        sendError(response, 503, "验证邮件发送失败，请稍后重试", request);
+        return;
+      }
       sendJson(
         response,
         201,
@@ -961,7 +1470,7 @@ async function handleRequest(request, response) {
           user: userFromRow(result.user),
           message: "注册成功，请前往邮箱激活账号或输入验证码",
           ...(NODE_ENV !== "production"
-            ? { verificationUrl: result.verificationUrl, verificationCode }
+            ? { verificationUrl, verificationCode }
             : {}),
         },
         request,
@@ -979,29 +1488,40 @@ async function handleRequest(request, response) {
       sendError(response, 400, "验证链接无效", request);
       return;
     }
-    const result = await query(
-      `UPDATE users u
-          SET email_verified = true,
-              verified_at = now(),
-              verification_failed_attempts = 0,
-              verification_locked_until = NULL
-        FROM verification_tokens v
-       WHERE v.token_hash = $1
-         AND v.user_id = u.id
-         AND v.used_at IS NULL
-         AND v.expires_at > now()
-      RETURNING u.*`,
-      [hashToken(token)],
-    );
-    if (!result.rowCount) {
+    const result = await withTransaction(async (client) => {
+      const tokenResult = await client.query(
+        `SELECT user_id
+           FROM verification_tokens
+          WHERE token_hash = $1
+            AND used_at IS NULL
+            AND expires_at > now()
+          FOR UPDATE`,
+        [hashToken(token)],
+      );
+      if (!tokenResult.rowCount) return null;
+      const verifiedUser = await client.query(
+        `UPDATE users
+            SET email_verified = true,
+                verified_at = now(),
+                verification_failed_attempts = 0,
+                verification_locked_until = NULL
+          WHERE id = $1
+        RETURNING *`,
+        [tokenResult.rows[0].user_id],
+      );
+      if (!verifiedUser.rowCount) return null;
+      await client.query(
+        "UPDATE verification_tokens SET used_at = now() WHERE token_hash = $1",
+        [hashToken(token)],
+      );
+      return verifiedUser.rows[0];
+    });
+    if (!result) {
       sendError(response, 400, "验证链接已失效或已使用", request);
       return;
     }
-    await query("UPDATE verification_tokens SET used_at = now() WHERE token_hash = $1", [
-      hashToken(token),
-    ]);
-    await createSession("user", result.rows[0].id, response);
-    sendJson(response, 200, { user: userFromRow(result.rows[0]) }, request);
+    await createSession("user", result.id, response);
+    sendJson(response, 200, { user: userFromRow(result) }, request);
     return;
   }
 
@@ -1025,7 +1545,7 @@ async function handleRequest(request, response) {
       );
       const user = userResult.rows[0];
       if (!user) return { kind: "invalid" };
-      if (user.email_verified) return { kind: "verified", user };
+      if (user.email_verified) return { kind: "already-verified" };
       if (
         user.verification_locked_until &&
         new Date(user.verification_locked_until).getTime() > Date.now()
@@ -1094,6 +1614,10 @@ async function handleRequest(request, response) {
       );
       return;
     }
+    if (result.kind === "already-verified") {
+      sendError(response, 409, "该邮箱已经验证，请直接使用密码登录", request);
+      return;
+    }
     if (result.kind !== "verified") {
       sendError(response, 400, "验证码错误或已过期", request);
       return;
@@ -1135,8 +1659,8 @@ async function handleRequest(request, response) {
       }
     }
     const token = makeToken();
-    const verificationCode = String(Math.floor(100000 + Math.random() * 900000));
-    const verificationUrl = await withTransaction(async (client) => {
+    const verificationCode = makeVerificationCode();
+    await withTransaction(async (client) => {
       await client.query(
         `UPDATE verification_tokens
             SET used_at = now()
@@ -1149,12 +1673,19 @@ async function handleRequest(request, response) {
          VALUES ($1, $2, $3, now() + interval '24 hours')`,
         [hashToken(token), user.id, verificationCode],
       );
-      await client.query(
-        "UPDATE users SET verification_sent_at = now() WHERE id = $1",
-        [user.id],
-      );
-      return sendUserVerificationEmail(email, token, verificationCode);
     });
+    let verificationUrl = "";
+    try {
+      verificationUrl = await sendUserVerificationEmail(email, token, verificationCode);
+      await query("UPDATE users SET verification_sent_at = now() WHERE id = $1", [user.id]);
+    } catch (mailError) {
+      await query(
+        "UPDATE verification_tokens SET used_at = now() WHERE token_hash = $1",
+        [hashToken(token)],
+      );
+      sendError(response, 503, "验证邮件发送失败，请稍后重试", request);
+      return;
+    }
     sendJson(
       response,
       200,
@@ -1170,6 +1701,11 @@ async function handleRequest(request, response) {
   if (request.method === "POST" && path === "/api/auth/user/login") {
     const body = await readBody(request);
     const email = String(body.email || "").trim().toLowerCase();
+    const retryAfter = consumeAuthIpLimit(request, "user-login", USER_LOGIN_IP_MAX_ATTEMPTS);
+    if (retryAfter) {
+      sendRateLimitError(response, retryAfter, "登录尝试过于频繁，请稍后再试", request);
+      return;
+    }
     const result = await query("SELECT * FROM users WHERE email = $1", [email]);
     const user = result.rows[0];
     if (!user || !verifyPassword(String(body.password || ""), user)) {
@@ -1215,7 +1751,7 @@ async function handleRequest(request, response) {
         }
       }
       const token = makeToken();
-      resetUrl = await withTransaction(async (client) => {
+      await withTransaction(async (client) => {
         await client.query(
           `UPDATE password_reset_tokens
               SET used_at = now()
@@ -1225,14 +1761,22 @@ async function handleRequest(request, response) {
         await client.query(
           `INSERT INTO password_reset_tokens (token_hash, user_id, expires_at)
            VALUES ($1, $2, now() + interval '1 hour')`,
-          [hashToken(token), user.id],
+           [hashToken(token), user.id],
         );
-        await client.query(
-          "UPDATE users SET password_reset_sent_at = now() WHERE id = $1",
-          [user.id],
-        );
-        return sendPasswordResetEmail(email, token);
       });
+      try {
+        resetUrl = await sendPasswordResetEmail(email, token);
+        await query("UPDATE users SET password_reset_sent_at = now() WHERE id = $1", [
+          user.id,
+        ]);
+      } catch (mailError) {
+        await query(
+          "UPDATE password_reset_tokens SET used_at = now() WHERE token_hash = $1",
+          [hashToken(token)],
+        );
+        sendError(response, 503, "密码重置邮件发送失败，请稍后重试", request);
+        return;
+      }
     }
     sendJson(
       response,
@@ -1255,28 +1799,40 @@ async function handleRequest(request, response) {
       return;
     }
     const record = createPasswordRecord(password);
-    const result = await query(
-      `UPDATE users u
-          SET password_hash = $1, password_salt = $2
-        FROM password_reset_tokens r
-       WHERE r.token_hash = $3
-         AND r.user_id = u.id
-         AND r.used_at IS NULL
-         AND r.expires_at > now()
-      RETURNING u.*`,
-      [record.hash, record.salt, hashToken(token)],
-    );
-    if (!result.rowCount) {
+    const result = await withTransaction(async (client) => {
+      const tokenResult = await client.query(
+        `SELECT user_id
+           FROM password_reset_tokens
+          WHERE token_hash = $1
+            AND used_at IS NULL
+            AND expires_at > now()
+          FOR UPDATE`,
+        [hashToken(token)],
+      );
+      if (!tokenResult.rowCount) return null;
+      const updatedUser = await client.query(
+        `UPDATE users
+            SET password_hash = $1, password_salt = $2
+          WHERE id = $3
+        RETURNING *`,
+        [record.hash, record.salt, tokenResult.rows[0].user_id],
+      );
+      if (!updatedUser.rowCount) return null;
+      await client.query(
+        "UPDATE password_reset_tokens SET used_at = now() WHERE token_hash = $1",
+        [hashToken(token)],
+      );
+      await client.query(
+        "DELETE FROM sessions WHERE principal_type = 'user' AND principal_id = $1",
+        [updatedUser.rows[0].id],
+      );
+      return updatedUser.rows[0];
+    });
+    if (!result) {
       sendError(response, 400, "重置链接已失效或已使用", request);
       return;
     }
-    await query("UPDATE password_reset_tokens SET used_at = now() WHERE token_hash = $1", [
-      hashToken(token),
-    ]);
-    await query("DELETE FROM sessions WHERE principal_type = 'user' AND principal_id = $1", [
-      result.rows[0].id,
-    ]);
-    sendJson(response, 200, { user: userFromRow(result.rows[0]) }, request);
+    sendJson(response, 200, { user: userFromRow(result) }, request);
     return;
   }
   if (request.method === "GET" && path === "/api/auth/user/me") {
@@ -1337,8 +1893,26 @@ async function handleRequest(request, response) {
     const dealType = body.dealType === "fixed_amount" ? "fixed_amount" : "percentage";
     const discountValue = Number(body.discountValue);
     const terms = String(body.terms || "").trim();
-    const endAt = parseDate(body.endAt);
-    if (!storeName || !code || !offer || !Number.isFinite(discountValue) || discountValue < 0) {
+    const endAtValue = String(body.endAt || "").trim();
+    const endAt = endAtValue ? parseDate(endAtValue) : null;
+    if (endAtValue && !endAt) {
+      sendError(response, 400, "截止日期格式不正确", request);
+      return;
+    }
+    if (
+      !storeName ||
+      !code ||
+      !offer ||
+      !Number.isFinite(discountValue) ||
+      discountValue < 0 ||
+      !hasLength(storeName, MAX_STORE_NAME_LENGTH) ||
+      !hasLength(code, MAX_CODE_LENGTH) ||
+      !/^[A-Z0-9_-]+$/.test(code) ||
+      !hasLength(offer, MAX_OFFER_LENGTH) ||
+      !hasLength(terms, MAX_TERMS_LENGTH) ||
+      discountValue > 99_999_999.99 ||
+      Math.abs(discountValue * 100 - Math.round(discountValue * 100)) > 1e-9
+    ) {
       sendError(response, 400, "请完整填写网站信息和优惠码信息", request);
       return;
     }
@@ -1369,11 +1943,13 @@ async function handleRequest(request, response) {
         const counts = await client.query(
           `SELECT
              COUNT(*)::int AS total_count,
-             COUNT(*) FILTER (WHERE created_at >= CURRENT_DATE)::int AS daily_count,
+             COUNT(*) FILTER (
+               WHERE (created_at AT TIME ZONE '${BUSINESS_TIME_ZONE}')::date >= ${BUSINESS_DATE_SQL}
+             )::int AS daily_count,
              COUNT(*) FILTER (
                WHERE status = 'published'
                  AND admin_status <> 'removed'
-                 AND (end_at IS NULL OR end_at >= CURRENT_DATE)
+                 AND (end_at IS NULL OR end_at >= ${BUSINESS_DATE_SQL})
              )::int AS public_count
            FROM promo_codes
           WHERE merchant_id = $1`,
@@ -1431,6 +2007,10 @@ async function handleRequest(request, response) {
       sendError(response, 403, "当前账号不可编辑优惠码", request);
       return;
     }
+    if (!isUuid(merchantDealMatch[1])) {
+      sendError(response, 400, "优惠码 ID 格式不正确", request);
+      return;
+    }
     const body = await readBody(request);
     const storeName = String(body.storeName || "").trim();
     let website;
@@ -1445,8 +2025,26 @@ async function handleRequest(request, response) {
     const dealType = body.dealType === "fixed_amount" ? "fixed_amount" : "percentage";
     const discountValue = Number(body.discountValue);
     const terms = String(body.terms || "").trim();
-    const endAt = parseDate(body.endAt);
-    if (!storeName || !code || !offer || !Number.isFinite(discountValue) || discountValue < 0) {
+    const endAtValue = String(body.endAt || "").trim();
+    const endAt = endAtValue ? parseDate(endAtValue) : null;
+    if (endAtValue && !endAt) {
+      sendError(response, 400, "截止日期格式不正确", request);
+      return;
+    }
+    if (
+      !storeName ||
+      !code ||
+      !offer ||
+      !Number.isFinite(discountValue) ||
+      discountValue < 0 ||
+      !hasLength(storeName, MAX_STORE_NAME_LENGTH) ||
+      !hasLength(code, MAX_CODE_LENGTH) ||
+      !/^[A-Z0-9_-]+$/.test(code) ||
+      !hasLength(offer, MAX_OFFER_LENGTH) ||
+      !hasLength(terms, MAX_TERMS_LENGTH) ||
+      discountValue > 99_999_999.99 ||
+      Math.abs(discountValue * 100 - Math.round(discountValue * 100)) > 1e-9
+    ) {
       sendError(response, 400, "请完整填写网站信息和优惠码信息", request);
       return;
     }
@@ -1504,6 +2102,10 @@ async function handleRequest(request, response) {
       sendError(response, 403, "当前账号不可修改优惠码", request);
       return;
     }
+    if (!isUuid(merchantToggleMatch[1])) {
+      sendError(response, 400, "优惠码 ID 格式不正确", request);
+      return;
+    }
     const publicLimit = Number(await getSetting("merchantDealPublicLimit", 10));
     const result = await withTransaction(async (client) => {
       const lockedMerchant = await client.query(
@@ -1529,7 +2131,7 @@ async function handleRequest(request, response) {
             WHERE merchant_id = $1
               AND status = 'published'
               AND admin_status <> 'removed'
-              AND (end_at IS NULL OR end_at >= CURRENT_DATE)`,
+              AND (end_at IS NULL OR end_at >= ${BUSINESS_DATE_SQL})`,
           [merchant.id],
         );
         if (Number.isFinite(publicLimit) && Number(count.rows[0].public_count) >= publicLimit) {
@@ -1576,17 +2178,31 @@ async function handleRequest(request, response) {
   if (favoriteMatch && (request.method === "POST" || request.method === "DELETE")) {
     const user = await getUser(request);
     if (!requirePrincipal(user, response, request, "请先登录用户账号")) return;
+    if (!isUuid(favoriteMatch[1])) {
+      sendError(response, 400, "优惠码 ID 格式不正确", request);
+      return;
+    }
     try {
       if (request.method === "POST") {
-        await query(
+        if (!(await getPublicDealById(favoriteMatch[1]))) {
+          sendError(response, 404, "优惠码不存在或当前不可用", request);
+          return;
+        }
+        const result = await query(
           "INSERT INTO favorites (user_id, promo_code_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
           [user.id, favoriteMatch[1]],
         );
+        if (result.rowCount) {
+          await recordDealEvent(request, favoriteMatch[1], "favorite", user.id);
+        }
       } else {
-        await query("DELETE FROM favorites WHERE user_id = $1 AND promo_code_id = $2", [
+        const result = await query("DELETE FROM favorites WHERE user_id = $1 AND promo_code_id = $2", [
           user.id,
           favoriteMatch[1],
         ]);
+        if (result.rowCount) {
+          await recordDealEvent(request, favoriteMatch[1], "unfavorite", user.id);
+        }
       }
     } catch (error) {
       if (error.code === "23503") {
@@ -1621,8 +2237,12 @@ async function handleRequest(request, response) {
     const body = await readBody(request);
     const dealId = String(body.dealId || "");
     const reason = String(body.reason || "").trim();
-    if (!dealId || !reason) {
+    if (!isUuid(dealId) || !reason || !hasLength(reason, MAX_REPORT_REASON_LENGTH)) {
       sendError(response, 400, "举报信息不完整", request);
+      return;
+    }
+    if (!(await getPublicDealById(dealId))) {
+      sendError(response, 404, "优惠码不存在或当前不可用", request);
       return;
     }
     try {
@@ -1631,6 +2251,7 @@ async function handleRequest(request, response) {
          VALUES ($1, $2, $3) RETURNING id`,
         [user.id, dealId, reason],
       );
+      await recordDealEvent(request, dealId, "report", user.id);
       sendJson(response, 201, { id: result.rows[0].id }, request);
     } catch (error) {
       if (error.code === "23505") sendError(response, 409, "你已经举报过这条优惠码", request);
@@ -1643,6 +2264,11 @@ async function handleRequest(request, response) {
   if (request.method === "POST" && path === "/api/admin/login") {
     const body = await readBody(request);
     const email = String(body.email || "").trim().toLowerCase();
+    const retryAfter = consumeAuthIpLimit(request, "admin-login", ADMIN_LOGIN_IP_MAX_ATTEMPTS);
+    if (retryAfter) {
+      sendRateLimitError(response, retryAfter, "管理员登录尝试过于频繁，请稍后再试", request);
+      return;
+    }
     const result = await query("SELECT * FROM admin_users WHERE email = $1", [email]);
     const admin = result.rows[0];
     if (!admin || !verifyPassword(String(body.password || ""), admin)) {
@@ -1693,6 +2319,16 @@ async function handleRequest(request, response) {
       sendError(response, 400, "跳转链接必须是有效的 HTTP 或 HTTPS 地址", request);
       return;
     }
+    const startsAt = announcement.startsAt ? parseDate(announcement.startsAt) : null;
+    const endsAt = announcement.endsAt ? parseDate(announcement.endsAt) : null;
+    if (announcement.startsAt && !startsAt) {
+      sendError(response, 400, "公告开始日期格式不正确", request);
+      return;
+    }
+    if (announcement.endsAt && !endsAt) {
+      sendError(response, 400, "公告结束日期格式不正确", request);
+      return;
+    }
     if (announcement.startsAt && announcement.endsAt && announcement.startsAt > announcement.endsAt) {
       sendError(response, 400, "结束日期不能早于开始日期", request);
       return;
@@ -1713,11 +2349,204 @@ async function handleRequest(request, response) {
     return;
   }
 
+  if (request.method === "GET" && path === "/api/admin/placements") {
+    const result = await query(
+      `SELECT pl.id AS placement_id, pl.promo_code_id, pl.placement_type,
+              pl.priority, pl.sponsor_name, pl.starts_at, pl.ends_at,
+              pl.status AS placement_status, pl.note,
+              pl.created_by, pl.created_at AS placement_created_at,
+              pl.updated_at AS placement_updated_at,
+              p.code, p.offer, m.store_name, m.website, m.email AS owner_email,
+              a.email AS created_by_email
+         FROM promo_code_placements pl
+         JOIN promo_codes p ON p.id = pl.promo_code_id
+         JOIN merchants m ON m.id = p.merchant_id
+         LEFT JOIN admin_users a ON a.id = pl.created_by
+        ORDER BY
+          CASE WHEN pl.status = 'active' THEN 0 ELSE 1 END,
+          pl.starts_at DESC,
+          pl.priority DESC,
+          pl.created_at DESC`,
+    );
+    sendJson(response, 200, {
+      placements: result.rows.map(placementFromRow),
+      total: result.rowCount,
+    }, request);
+    return;
+  }
+
+  if (request.method === "POST" && path === "/api/admin/placements") {
+    const body = await readBody(request);
+    const dealId = String(body.dealId || "").trim();
+    if (!dealId) {
+      sendError(response, 400, "请选择优惠码", request);
+      return;
+    }
+    if (!isUuid(dealId)) {
+      sendError(response, 400, "优惠码 ID 格式不正确", request);
+      return;
+    }
+    const dealResult = await query(
+      `SELECT p.*, m.store_name, m.website, m.status AS merchant_status,
+              m.admin_status AS merchant_admin_status, m.email_verified
+         FROM promo_codes p
+         JOIN merchants m ON m.id = p.merchant_id
+        WHERE p.id = $1`,
+      [dealId],
+    );
+    const deal = dealResult.rows[0];
+    if (!deal) {
+      sendError(response, 404, "优惠码不存在", request);
+      return;
+    }
+    if (deal.end_at && dateOnly(deal.end_at) < getBusinessDate()) {
+      sendError(response, 400, "已过期的优惠码不能设置置顶推广", request);
+      return;
+    }
+    if (deal.admin_status === "removed" || deal.status !== "published") {
+      sendError(response, 400, "只有正常发布中的优惠码可以设置置顶", request);
+      return;
+    }
+    if (
+      deal.merchant_status !== "active" ||
+      deal.merchant_admin_status === "suspended" ||
+      deal.email_verified !== true
+    ) {
+      sendError(response, 400, "该商户当前不可公开展示", request);
+      return;
+    }
+
+    const placement = normalizePlacementPayload(body);
+    validatePlacementWindow(deal.end_at, placement);
+    const result = await withTransaction(async (client) => {
+      await lockPlacementMerchant(client, dealId);
+      await ensureSponsoredPlacementAvailable(client, dealId, placement);
+      return client.query(
+        `INSERT INTO promo_code_placements
+          (promo_code_id, placement_type, priority, sponsor_name, starts_at, ends_at, status, note, created_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         RETURNING id`,
+        [
+          dealId,
+          placement.placementType,
+          placement.priority,
+          placement.sponsorName,
+          placement.startsAt,
+          placement.endsAt,
+          placement.status,
+          placement.note,
+          admin.id,
+        ],
+      );
+    });
+    const record = await getPlacementRecord(result.rows[0].id);
+    await addAuditLog(
+      admin,
+      "create_promo_code_placement",
+      "promo_code",
+      dealId,
+      `创建${placement.placementType === "sponsored" ? "赞助" : "编辑"}置顶`,
+    );
+    sendJson(response, 201, { placement: placementFromRow(record) }, request);
+    return;
+  }
+
+  const adminPlacementMatch = path.match(/^\/api\/admin\/placements\/([^/]+)$/);
+  if (adminPlacementMatch && request.method === "PATCH") {
+    if (!isUuid(adminPlacementMatch[1])) {
+      sendError(response, 400, "置顶记录 ID 格式不正确", request);
+      return;
+    }
+    const current = await getPlacementRecord(adminPlacementMatch[1]);
+    if (!current) {
+      sendError(response, 404, "置顶记录不存在", request);
+      return;
+    }
+    const body = await readBody(request);
+    const placement = normalizePlacementPayload(body, {
+      placementType: current.placement_type,
+      priority: current.priority,
+      sponsorName: current.sponsor_name,
+      startsAt: current.starts_at,
+      endsAt: current.ends_at,
+      status: current.placement_status,
+      note: current.note,
+    });
+    if (placement.status === "active") {
+      validatePlacementWindow(current.deal_end_at, placement);
+    }
+    await withTransaction(async (client) => {
+      await lockPlacementMerchant(client, current.promo_code_id);
+      await ensureSponsoredPlacementAvailable(
+        client,
+        current.promo_code_id,
+        placement,
+        adminPlacementMatch[1],
+      );
+      await client.query(
+        `UPDATE promo_code_placements
+            SET placement_type = $1,
+                priority = $2,
+                sponsor_name = $3,
+                starts_at = $4,
+                ends_at = $5,
+                status = $6,
+                note = $7,
+                updated_at = now()
+          WHERE id = $8`,
+        [
+          placement.placementType,
+          placement.priority,
+          placement.sponsorName,
+          placement.startsAt,
+          placement.endsAt,
+          placement.status,
+          placement.note,
+          adminPlacementMatch[1],
+        ],
+      );
+    });
+    const record = await getPlacementRecord(adminPlacementMatch[1]);
+    await addAuditLog(
+      admin,
+      "update_promo_code_placement",
+      "promo_code",
+      current.promo_code_id,
+      `更新${placement.placementType === "sponsored" ? "赞助" : "编辑"}置顶`,
+    );
+    sendJson(response, 200, { placement: placementFromRow(record) }, request);
+    return;
+  }
+
+  if (adminPlacementMatch && request.method === "DELETE") {
+    if (!isUuid(adminPlacementMatch[1])) {
+      sendError(response, 400, "置顶记录 ID 格式不正确", request);
+      return;
+    }
+    const current = await getPlacementRecord(adminPlacementMatch[1]);
+    if (!current) {
+      sendError(response, 404, "置顶记录不存在", request);
+      return;
+    }
+    await query("DELETE FROM promo_code_placements WHERE id = $1", [adminPlacementMatch[1]]);
+    await addAuditLog(
+      admin,
+      "delete_promo_code_placement",
+      "promo_code",
+      current.promo_code_id,
+      "删除优惠码置顶记录",
+    );
+    sendJson(response, 200, { ok: true }, request);
+    return;
+  }
+
   if (request.method === "GET" && path === "/api/admin/dashboard") {
     const [deals, merchants, reports] = await Promise.all([
       query(
-        `SELECT p.*, m.store_name, m.website, m.email AS owner_email
+        `SELECT p.*, m.store_name, m.website, m.email AS owner_email,
+                ${DEAL_PLACEMENT_COLUMNS}
            FROM promo_codes p JOIN merchants m ON m.id = p.merchant_id
+           ${ADMIN_PLACEMENT_JOIN}
           ORDER BY p.created_at DESC`,
       ),
       query("SELECT * FROM merchants ORDER BY created_at DESC"),
@@ -1738,11 +2567,35 @@ async function handleRequest(request, response) {
     return;
   }
 
+  if (request.method === "GET" && path === "/api/admin/placement-deals") {
+    const result = await query(
+      `SELECT p.*, m.store_name, m.website, m.email AS owner_email,
+              ${DEAL_PLACEMENT_COLUMNS}
+         FROM promo_codes p
+         JOIN merchants m ON m.id = p.merchant_id
+         ${ADMIN_PLACEMENT_JOIN}
+        WHERE p.status = 'published'
+          AND p.admin_status <> 'removed'
+          AND m.email_verified = true
+          AND m.status = 'active'
+          AND m.admin_status <> 'suspended'
+          AND (p.end_at IS NULL OR p.end_at >= ${BUSINESS_DATE_SQL})
+        ORDER BY p.created_at DESC`,
+    );
+    sendJson(response, 200, {
+      deals: result.rows.map(dealFromRow),
+      total: result.rowCount,
+    }, request);
+    return;
+  }
+
   if (request.method === "GET" && path === "/api/admin/deals") {
     const { page, limit, offset } = parsePagination(url, 50, 200);
     const result = await query(
-      `SELECT p.*, m.store_name, m.website, m.email AS owner_email
+      `SELECT p.*, m.store_name, m.website, m.email AS owner_email,
+              ${DEAL_PLACEMENT_COLUMNS}
          FROM promo_codes p JOIN merchants m ON m.id = p.merchant_id
+         ${ADMIN_PLACEMENT_JOIN}
         ORDER BY p.created_at DESC
         LIMIT $1 OFFSET $2`,
       [limit, offset],
@@ -1761,6 +2614,10 @@ async function handleRequest(request, response) {
 
   const adminDealMatch = path.match(/^\/api\/admin\/deals\/([^/]+)$/);
   if (adminDealMatch && request.method === "PATCH") {
+    if (!isUuid(adminDealMatch[1])) {
+      sendError(response, 400, "优惠码 ID 格式不正确", request);
+      return;
+    }
     const body = await readBody(request);
     const removed = body.adminStatus === "removed";
     const result = await query(
@@ -1776,8 +2633,10 @@ async function handleRequest(request, response) {
       return;
     }
     const deal = await query(
-      `SELECT p.*, m.store_name, m.website, m.email AS owner_email
+      `SELECT p.*, m.store_name, m.website, m.email AS owner_email,
+              ${DEAL_PLACEMENT_COLUMNS}
          FROM promo_codes p JOIN merchants m ON m.id = p.merchant_id
+         ${ADMIN_PLACEMENT_JOIN}
         WHERE p.id = $1`,
       [adminDealMatch[1]],
     );
@@ -1787,6 +2646,10 @@ async function handleRequest(request, response) {
   }
 
   if (adminDealMatch && request.method === "DELETE") {
+    if (!isUuid(adminDealMatch[1])) {
+      sendError(response, 400, "优惠码 ID 格式不正确", request);
+      return;
+    }
     const result = await query("DELETE FROM promo_codes WHERE id = $1 RETURNING id", [adminDealMatch[1]]);
     if (!result.rowCount) {
       sendError(response, 404, "优惠码不存在", request);
@@ -1811,14 +2674,20 @@ async function handleRequest(request, response) {
 
   const adminMerchantMatch = path.match(/^\/api\/admin\/merchants\/([^/]+)$/);
   if (adminMerchantMatch && request.method === "GET") {
+    if (!isUuid(adminMerchantMatch[1])) {
+      sendError(response, 400, "发布者 ID 格式不正确", request);
+      return;
+    }
     const merchantResult = await query("SELECT * FROM merchants WHERE id = $1", [adminMerchantMatch[1]]);
     if (!merchantResult.rowCount) {
       sendError(response, 404, "发布者资料不存在", request);
       return;
     }
     const deals = await query(
-      `SELECT p.*, m.store_name, m.website, m.email AS owner_email
+      `SELECT p.*, m.store_name, m.website, m.email AS owner_email,
+              ${ADMIN_PLACEMENT_COLUMNS}
          FROM promo_codes p JOIN merchants m ON m.id = p.merchant_id
+         ${ADMIN_PLACEMENT_JOIN}
         WHERE p.merchant_id = $1 ORDER BY p.created_at DESC`,
       [adminMerchantMatch[1]],
     );
@@ -1830,6 +2699,10 @@ async function handleRequest(request, response) {
   }
 
   if (adminMerchantMatch && request.method === "PATCH") {
+    if (!isUuid(adminMerchantMatch[1])) {
+      sendError(response, 400, "发布者 ID 格式不正确", request);
+      return;
+    }
     const body = await readBody(request);
     const suspended = body.status === "suspended" || body.adminStatus === "suspended";
     const result = await query(
@@ -1860,6 +2733,10 @@ async function handleRequest(request, response) {
 
   const adminReportMatch = path.match(/^\/api\/admin\/reports\/([^/]+)$/);
   if (adminReportMatch && request.method === "PATCH") {
+    if (!isUuid(adminReportMatch[1])) {
+      sendError(response, 400, "举报记录 ID 格式不正确", request);
+      return;
+    }
     const body = await readBody(request);
     const status = ["pending", "resolved", "dismissed"].includes(body.status) ? body.status : "pending";
     const result = await query(
@@ -1928,6 +2805,10 @@ async function handleRequest(request, response) {
 
   const adminFilterMatch = path.match(/^\/api\/admin\/website-filters\/([^/]+)$/);
   if (adminFilterMatch && request.method === "PATCH") {
+    if (!isUuid(adminFilterMatch[1])) {
+      sendError(response, 400, "过滤规则 ID 格式不正确", request);
+      return;
+    }
     const body = await readBody(request);
     const result = await query(
       "UPDATE website_filters SET status = $1 WHERE id = $2 RETURNING *",
@@ -1943,6 +2824,10 @@ async function handleRequest(request, response) {
   }
 
   if (adminFilterMatch && request.method === "DELETE") {
+    if (!isUuid(adminFilterMatch[1])) {
+      sendError(response, 400, "过滤规则 ID 格式不正确", request);
+      return;
+    }
     await query("DELETE FROM website_filters WHERE id = $1", [adminFilterMatch[1]]);
     await addAuditLog(admin, "delete_website_filter", "website", adminFilterMatch[1], "删除网站过滤规则");
     sendJson(response, 200, { ok: true }, request);
@@ -2003,8 +2888,8 @@ async function handleRequest(request, response) {
       await setSetting("preventDuplicateMerchantCodes", body.preventDuplicateMerchantCodes);
     }
     if (body.password) {
-      if (String(body.password).length < 8) {
-        sendError(response, 400, "新密码至少需要 8 位", request);
+      if (String(body.password).length < 16) {
+        sendError(response, 400, "新密码至少需要 16 位", request);
         return;
       }
       const record = createPasswordRecord(String(body.password));
@@ -2053,6 +2938,10 @@ async function handleRequest(request, response) {
 await initDatabase();
 await ensureAdmin();
 await ensureDevelopmentAccounts();
+await cleanupExpiredRecords();
+
+const cleanupTimer = setInterval(cleanupExpiredRecords, 60 * 60 * 1000);
+cleanupTimer.unref();
 
 const server = createServer((request, response) => {
   handleRequest(request, response).catch((error) => {
@@ -2069,6 +2958,7 @@ server.listen(PORT, "0.0.0.0", () => {
 });
 
 process.on("SIGTERM", async () => {
+  clearInterval(cleanupTimer);
   server.close();
   await closeDatabase();
 });

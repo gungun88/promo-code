@@ -26,6 +26,7 @@ import {
   Megaphone,
   Menu,
   Pause,
+  Pin,
   Play,
   Plus,
   RefreshCw,
@@ -79,6 +80,17 @@ function normalizeLimitValue(value, fallback) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return fallback;
   return Math.max(0, Math.floor(numeric));
+}
+
+function getBusinessDateInputValue(date = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}`;
 }
 
 function normalizeAnnouncement(value = {}) {
@@ -297,10 +309,12 @@ function formatDate(date) {
 
 function daysUntil(date) {
   if (!date) return null;
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const target = new Date(`${date}T00:00:00`);
-  return Math.ceil((target - today) / 86400000);
+  const today = getBusinessDateInputValue();
+  const target = Date.parse(`${date}T00:00:00Z`);
+  const current = Date.parse(`${today}T00:00:00Z`);
+  return Number.isNaN(target) || Number.isNaN(current)
+    ? null
+    : Math.ceil((target - current) / 86400000);
 }
 
 function useNavigation() {
@@ -1054,7 +1068,10 @@ function DealRow({ deal, isFavorite, onCopy, onFavorite, onReport }) {
         <div className="store-cell">
           <FaviconAvatar website={deal.website} fallback={deal.storeName.slice(0, 1)} />
           <div>
-            <strong title={deal.storeName}>{deal.storeName}</strong>
+            <div className="store-name-line">
+              <strong title={deal.storeName}>{deal.storeName}</strong>
+              {deal.isSponsored && <span className="sponsor-badge">赞助</span>}
+            </div>
             <a
               className="store-domain"
               href={deal.website}
@@ -1694,6 +1711,7 @@ const ADMIN_NAV_ITEMS = [
   { path: "/admin", label: "数据概览", icon: LayoutDashboard },
   { path: "/admin/promo-codes", label: "优惠码管理", icon: Tags },
   { path: "/admin/merchants", label: "发布者管理", icon: Users },
+  { path: "/admin/placements", label: "置顶推广", icon: Pin },
   { path: "/admin/reports", label: "举报管理", icon: Flag },
   { path: "/admin/website-filter", label: "网站过滤", icon: ShieldAlert },
   { path: "/admin/announcements", label: "公告管理", icon: Megaphone },
@@ -1805,6 +1823,8 @@ function AdminConsole({ path, session, navigate, onLogout, showToast }) {
         showToast={showToast}
       />
     );
+  } else if (path === "/admin/placements") {
+    page = <AdminPlacements refreshKey={refreshKey} showToast={showToast} />;
   } else if (path === "/admin/merchants") {
     page = (
       <AdminMerchants
@@ -1931,6 +1951,9 @@ function AdminConsole({ path, session, navigate, onLogout, showToast }) {
 function getAdminPageMeta(path) {
   if (path.startsWith("/admin/promo-codes")) {
     return { title: "优惠码管理" };
+  }
+  if (path.startsWith("/admin/placements")) {
+    return { title: "置顶推广" };
   }
   if (path.startsWith("/admin/merchants")) {
     return { title: "发布者管理" };
@@ -2435,6 +2458,287 @@ function AdminPromoCodes({ refreshKey, showToast }) {
           )}
           {!filteredDeals.length && <AdminEmptyState label="没有符合条件的优惠码" />}
         </div>}
+      </AdminPanel>
+    </div>
+  );
+}
+
+function AdminPlacements({ refreshKey, showToast }) {
+  const today = getBusinessDateInputValue();
+  const [placements, setPlacements] = useState([]);
+  const [deals, setDeals] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
+  const [form, setForm] = useState({
+    dealId: "",
+    placementType: "sponsored",
+    priority: "100",
+    sponsorName: "",
+    startsAt: today,
+    endsAt: "",
+    note: "",
+  });
+
+  const reload = () => {
+    setLoading(true);
+    return Promise.all([
+      adminApiRequest("/api/admin/placements"),
+      adminApiRequest("/api/admin/placement-deals"),
+    ])
+      .then(([placementData, dealData]) => {
+        const nextPlacements = Array.isArray(placementData?.placements)
+          ? placementData.placements
+          : [];
+        const nextDeals = Array.isArray(dealData?.deals) ? dealData.deals : [];
+        setPlacements(nextPlacements);
+        setDeals(nextDeals);
+        setForm((current) => ({
+          ...current,
+          dealId: current.dealId || nextDeals[0]?.id || "",
+        }));
+      })
+      .catch((error) => showToast(error.message || "置顶数据加载失败"))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    reload();
+  }, [refreshKey]);
+
+  const availableDeals = deals.filter(
+    (deal) => deal.status === "published" && deal.adminStatus !== "removed",
+  );
+
+  const updateForm = (key, value) => {
+    setForm((current) => ({ ...current, [key]: value }));
+  };
+
+  const submit = async (event) => {
+    event.preventDefault();
+    setSubmitting(true);
+    try {
+      await adminApiRequest("/api/admin/placements", {
+        method: "POST",
+        body: JSON.stringify({
+          ...form,
+          priority: Number(form.priority),
+        }),
+      });
+      setForm((current) => ({
+        ...current,
+        dealId: "",
+        sponsorName: "",
+        note: "",
+        startsAt: today,
+        endsAt: "",
+      }));
+      await reload();
+      showToast("置顶推广已创建", "success");
+    } catch (error) {
+      showToast(error.message || "置顶推广创建失败");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const togglePlacement = async (placement) => {
+    try {
+      await adminApiRequest(`/api/admin/placements/${placement.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ status: placement.status === "active" ? "paused" : "active" }),
+      });
+      await reload();
+      showToast(placement.status === "active" ? "置顶推广已暂停" : "置顶推广已恢复", "success");
+    } catch (error) {
+      showToast(error.message || "置顶状态更新失败");
+    }
+  };
+
+  const removePlacement = async (placement) => {
+    if (!window.confirm(`确认删除 ${placement.code} 的置顶记录吗？`)) return;
+    try {
+      await adminApiRequest(`/api/admin/placements/${placement.id}`, { method: "DELETE" });
+      await reload();
+      showToast("置顶推广已删除", "success");
+    } catch (error) {
+      showToast(error.message || "置顶推广删除失败");
+    }
+  };
+
+  return (
+    <div className="admin-page">
+      <AdminPageHeader
+        eyebrow="商业运营"
+        title="置顶推广"
+        description="在统一优惠码列表中管理编辑精选和赞助置顶，前台会在商户名称旁显示赞助标识。"
+      />
+
+      <AdminPanel
+        title="新增置顶推广"
+        description="赞助置顶需要填写赞助名称，并设置有效期。"
+      >
+        <form className="placement-form" onSubmit={submit}>
+          <div className="placement-form-grid">
+            <label className="admin-field">
+              <span>优惠码</span>
+              <select
+                value={form.dealId}
+                required
+                onChange={(event) => updateForm("dealId", event.target.value)}
+              >
+                <option value="">请选择优惠码</option>
+                {availableDeals.map((deal) => (
+                  <option value={deal.id} key={deal.id}>
+                    {deal.code} · {deal.storeName}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="admin-field">
+              <span>置顶类型</span>
+              <select
+                value={form.placementType}
+                onChange={(event) => updateForm("placementType", event.target.value)}
+              >
+                <option value="sponsored">赞助置顶</option>
+                <option value="editorial">编辑精选</option>
+              </select>
+            </label>
+            <label className="admin-field">
+              <span>优先级</span>
+              <input
+                type="number"
+                min="0"
+                max="1000"
+                value={form.priority}
+                onChange={(event) => updateForm("priority", event.target.value)}
+              />
+            </label>
+            <label className="admin-field">
+              <span>赞助名称</span>
+              <input
+                value={form.sponsorName}
+                placeholder="例如：Grammarly 官方赞助"
+                required={form.placementType === "sponsored"}
+                onChange={(event) => updateForm("sponsorName", event.target.value)}
+              />
+            </label>
+            <label className="admin-field">
+              <span>开始日期</span>
+              <input
+                type="date"
+                value={form.startsAt}
+                required
+                onChange={(event) => updateForm("startsAt", event.target.value)}
+              />
+            </label>
+            <label className="admin-field">
+              <span>结束日期</span>
+              <input
+                type="date"
+                value={form.endsAt}
+                min={form.startsAt}
+                onChange={(event) => updateForm("endsAt", event.target.value)}
+              />
+            </label>
+          </div>
+          <label className="admin-field placement-note-field">
+            <span>内部备注</span>
+            <input
+              value={form.note}
+              placeholder="仅后台可见，例如合同编号或合作说明"
+              onChange={(event) => updateForm("note", event.target.value)}
+            />
+          </label>
+          <div className="admin-settings-footer">
+            <span className="admin-field-hint">同一商户同一时间只能有一个赞助置顶优惠码</span>
+            <button className="admin-primary-button" type="submit" disabled={submitting || !availableDeals.length}>
+              <Pin size={15} />
+              {submitting ? "保存中..." : "创建置顶"}
+            </button>
+          </div>
+        </form>
+      </AdminPanel>
+
+      <AdminPanel
+        title="置顶记录"
+        description={`共 ${placements.length} 条记录，已过期记录不会在前台生效。`}
+      >
+        {loading ? (
+          <div className="admin-empty-state">正在加载置顶记录...</div>
+        ) : placements.length ? (
+          <div className="admin-table-wrap">
+            <table className="admin-table placement-table">
+              <thead>
+                <tr>
+                  <th>优惠码</th>
+                  <th>商户</th>
+                  <th>类型</th>
+                  <th>有效期</th>
+                  <th>优先级</th>
+                  <th>状态</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {placements.map((placement) => (
+                  <tr key={placement.id}>
+                    <td>
+                      <span className="admin-code-chip">{placement.code}</span>
+                      {placement.sponsorName && (
+                        <span className="admin-table-secondary">{placement.sponsorName}</span>
+                      )}
+                    </td>
+                    <td>
+                      <strong className="admin-table-primary">{placement.storeName}</strong>
+                      <span className="admin-table-secondary">{placement.ownerEmail}</span>
+                    </td>
+                    <td>
+                      <AdminStatusBadge
+                        status={placement.placementType === "sponsored" ? "active" : "pending"}
+                        label={placement.placementType === "sponsored" ? "赞助置顶" : "编辑精选"}
+                      />
+                    </td>
+                    <td>
+                      {placement.startsAt || "立即"} 至 {placement.endsAt || "长期"}
+                    </td>
+                    <td>{placement.priority}</td>
+                    <td>
+                      <AdminStatusBadge
+                        status={placement.status === "active" ? "published" : "disabled"}
+                        label={placement.status === "active" ? "启用中" : "已暂停"}
+                      />
+                    </td>
+                    <td>
+                      <div className="admin-row-actions">
+                        <button
+                          className="admin-icon-button"
+                          type="button"
+                          title={placement.status === "active" ? "暂停置顶" : "恢复置顶"}
+                          aria-label={placement.status === "active" ? "暂停置顶" : "恢复置顶"}
+                          onClick={() => togglePlacement(placement)}
+                        >
+                          {placement.status === "active" ? <Pause size={15} /> : <Play size={15} />}
+                        </button>
+                        <button
+                          className="admin-icon-button danger"
+                          type="button"
+                          title="删除置顶"
+                          aria-label="删除置顶"
+                          onClick={() => removePlacement(placement)}
+                        >
+                          <Trash2 size={15} />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <AdminEmptyState label="暂无置顶推广记录" />
+        )}
       </AdminPanel>
     </div>
   );
