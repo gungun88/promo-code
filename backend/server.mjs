@@ -41,6 +41,97 @@ const FRONTEND_ORIGINS = new Set(
     .map((origin) => origin.trim())
     .filter(Boolean),
 );
+const oauthStates = new Map();
+const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
+const OAUTH_MAX_STATES = 5000;
+const OAUTH_REQUEST_TIMEOUT_MS = 10_000;
+
+function getUserOAuthProviderConfig(provider) {
+  return {
+    provider,
+    enabled: false,
+    issuer: provider === "google" ? "https://accounts.google.com" : "",
+    clientId: "",
+    clientSecret: "",
+    redirectUri: "",
+  };
+}
+
+const DEFAULT_USER_OAUTH_PROVIDER = {
+  enabled: false,
+  issuer: "",
+  clientId: "",
+  clientSecret: "",
+  redirectUri: "",
+};
+
+async function getEffectiveUserOAuthProviderConfig(provider) {
+  const configured = await getSetting(`userOAuth.${provider}`, null);
+  return {
+    ...DEFAULT_USER_OAUTH_PROVIDER,
+    ...getUserOAuthProviderConfig(provider),
+    ...(configured && typeof configured === "object" ? configured : {}),
+    provider,
+  };
+}
+
+function safeUserOAuthProviderConfig(config) {
+  return {
+    provider: config.provider,
+    enabled: config.enabled === true,
+    issuer: config.issuer || "",
+    clientId: config.clientId || "",
+    redirectUri: config.redirectUri || "",
+    hasClientSecret: Boolean(config.clientSecret),
+  };
+}
+
+async function getOAuthMetadata(config) {
+  if (!config.issuer) throw httpError(503, "OAuth 身份平台未配置");
+  let response;
+  try {
+    response = await fetchWithTimeout(`${config.issuer}/.well-known/openid-configuration`);
+  } catch (error) {
+    if (error.name === "TimeoutError" || error.name === "AbortError") {
+      throw httpError(503, "OAuth 身份平台响应超时");
+    }
+    throw httpError(503, "无法连接 OAuth 身份平台");
+  }
+  if (!response.ok) throw httpError(503, "无法读取 OAuth 身份平台配置");
+  const metadata = await response.json();
+  if (!metadata.authorization_endpoint || !metadata.token_endpoint || !metadata.userinfo_endpoint) {
+    throw httpError(503, "OAuth 身份平台缺少必要的 OIDC 接口");
+  }
+  return metadata;
+}
+
+async function fetchWithTimeout(url, options = {}) {
+  return fetch(url, { ...options, signal: AbortSignal.timeout(OAUTH_REQUEST_TIMEOUT_MS) });
+}
+
+function cleanupOAuthStates() {
+  const now = Date.now();
+  for (const [state, item] of oauthStates) if (item.expiresAt <= now) oauthStates.delete(state);
+}
+
+function getOAuthRedirectUri(config) {
+  if (!config.redirectUri) throw httpError(503, "OAuth 回调地址未配置");
+  return config.redirectUri;
+}
+
+function oauthUserUrl() {
+  return `${[...FRONTEND_ORIGINS][0] || ""}/user/login`;
+}
+
+function getSafeUserNextPath(value) {
+  const next = String(value || "").trim();
+  return next.startsWith("/") && !next.startsWith("//") ? next : "/user/center";
+}
+
+function oauthStateCookie(value, maxAge) {
+  const secure = NODE_ENV === "production" ? "; Secure" : "";
+  return `admin_oauth_state=${encodeURIComponent(value)}; HttpOnly; SameSite=Lax; Path=/api/; Max-Age=${maxAge}${secure}`;
+}
 
 const DEFAULT_ANNOUNCEMENT = {
   id: "site-announcement",
@@ -576,6 +667,7 @@ async function getSetting(key, fallback) {
 
 function defaultMailSettings() {
   return {
+    enabled: true,
     fromAddress: process.env.MAIL_FROM || "",
     contentFormat: "multipart",
     driver: MAIL_DRIVER,
@@ -596,6 +688,7 @@ function normalizeMailSettings(value = {}, fallback = defaultMailSettings()) {
   const fallbackSmtp = fallback.smtp || {};
   const driver = String(value.driver || fallback.driver || MAIL_DRIVER).trim().toLowerCase();
   return {
+    enabled: value.enabled !== false,
     fromAddress: String(value.fromAddress ?? fallback.fromAddress ?? "").trim(),
     contentFormat: ["multipart", "plain", "html"].includes(value.contentFormat)
       ? value.contentFormat
@@ -611,7 +704,7 @@ function normalizeMailSettings(value = {}, fallback = defaultMailSettings()) {
         : fallbackSmtp.encryption || "tls",
       username: String(smtp.username ?? fallbackSmtp.username ?? "").trim(),
       password: String(smtp.password ?? fallbackSmtp.password ?? ""),
-      verifySsl: smtp.verifySsl !== false,
+      verifySsl: (smtp.verifySsl ?? fallbackSmtp.verifySsl) !== false,
     },
     testRecipient: String(value.testRecipient ?? fallback.testRecipient ?? "").trim(),
   };
@@ -921,6 +1014,7 @@ async function getPublicDealById(dealId) {
 
 async function sendMail(to, subject, text, html) {
   const settings = await getMailSettings();
+  if (!settings.enabled) return;
   const driver = settings.driver;
   if (driver === "null") return;
   if (driver === "log") {
@@ -1314,6 +1408,7 @@ async function handleRequest(request, response) {
           "allowUserRegistration",
           await getSetting("allowMerchantRegistration", true),
         ),
+        mailEnabled: (await getMailSettings()).enabled,
         showGithubLink: await getSetting("showGithubLink", true),
         githubUrl: GITHUB_REPOSITORY_URL,
       },
@@ -1414,12 +1509,13 @@ async function handleRequest(request, response) {
     }
     const mailSettings = await getMailSettings();
     if (
-      NODE_ENV === "production" &&
-      (mailSettings.driver !== "smtp" ||
-        !mailSettings.smtp.host ||
-        !mailSettings.smtp.username ||
-        !mailSettings.smtp.password ||
-        !(mailSettings.fromAddress || mailSettings.smtp.username))
+      !mailSettings.enabled ||
+      (NODE_ENV === "production" &&
+        (mailSettings.driver !== "smtp" ||
+          !mailSettings.smtp.host ||
+          !mailSettings.smtp.username ||
+          !mailSettings.smtp.password ||
+          !(mailSettings.fromAddress || mailSettings.smtp.username)))
     ) {
       sendError(response, 503, "邮箱服务尚未配置", request);
       return;
@@ -1628,6 +1724,10 @@ async function handleRequest(request, response) {
   }
 
   if (request.method === "POST" && path === "/api/auth/user/resend-verification") {
+    if (!(await getMailSettings()).enabled) {
+      sendError(response, 503, "邮箱服务已关闭，暂不支持发送验证邮件", request);
+      return;
+    }
     const body = await readBody(request);
     const email = String(body.email || "").trim().toLowerCase();
     if (!isEmail(email)) {
@@ -1722,6 +1822,10 @@ async function handleRequest(request, response) {
   }
 
   if (request.method === "POST" && path === "/api/auth/user/forgot-password") {
+    if (!(await getMailSettings()).enabled) {
+      sendError(response, 503, "邮箱服务已关闭，暂不支持找回密码", request);
+      return;
+    }
     const body = await readBody(request);
     const email = String(body.email || "").trim().toLowerCase();
     if (!isEmail(email)) {
@@ -2258,6 +2362,121 @@ async function handleRequest(request, response) {
       else if (error.code === "23503") sendError(response, 404, "优惠码不存在", request);
       else throw error;
     }
+    return;
+  }
+
+  if (request.method === "GET" && path === "/api/auth/user/oauth/providers") {
+    sendJson(response, 200, {
+      providers: (await Promise.all(["google", "custom"].map((provider) => getEffectiveUserOAuthProviderConfig(provider))))
+        .filter((config) => config.enabled && config.clientId && config.clientSecret)
+        .map((config) => ({ id: config.provider, name: config.provider === "google" ? "Google" : "自建身份平台" })),
+    }, request);
+    return;
+  }
+
+  const userOAuthStart = path.match(/^\/api\/auth\/user\/oauth\/(google|custom)$/);
+  const userOAuthCallback = path.match(/^\/api\/auth\/user\/oauth\/(google|custom)\/callback$/);
+  if (request.method === "GET" && (userOAuthStart || userOAuthCallback)) {
+    cleanupOAuthStates();
+    const provider = (userOAuthStart || userOAuthCallback)[1];
+    const config = await getEffectiveUserOAuthProviderConfig(provider);
+    if (!config.enabled || !config.clientId || !config.clientSecret) {
+      sendError(response, 404, "OAuth 登录方式未启用", request);
+      return;
+    }
+    if (userOAuthStart) {
+      const retryAfter = consumeAuthIpLimit(request, "oauth-start", 20);
+      if (retryAfter) {
+        sendRateLimitError(response, retryAfter, "授权登录请求过于频繁，请稍后再试", request);
+        return;
+      }
+      cleanupOAuthStates();
+      if (oauthStates.size >= OAUTH_MAX_STATES) {
+        sendError(response, 503, "授权登录服务繁忙，请稍后再试", request);
+        return;
+      }
+    }
+    const metadata = await getOAuthMetadata(config);
+    const redirectUri = getOAuthRedirectUri(config);
+    if (userOAuthStart) {
+      const state = `user_${makeToken()}`;
+      const verifier = makeToken();
+      oauthStates.set(state, {
+        verifier,
+        provider,
+        type: "user",
+        nextPath: getSafeUserNextPath(url.searchParams.get("next")),
+        redirectUri,
+        expiresAt: Date.now() + OAUTH_STATE_TTL_MS,
+      });
+      response.setHeader("Set-Cookie", oauthStateCookie(state, 600));
+      const authorizeUrl = new URL(metadata.authorization_endpoint);
+      authorizeUrl.searchParams.set("client_id", config.clientId);
+      authorizeUrl.searchParams.set("redirect_uri", redirectUri);
+      authorizeUrl.searchParams.set("response_type", "code");
+      authorizeUrl.searchParams.set("scope", "openid profile email");
+      authorizeUrl.searchParams.set("state", state);
+      authorizeUrl.searchParams.set("code_challenge", createHash("sha256").update(verifier).digest("base64url"));
+      authorizeUrl.searchParams.set("code_challenge_method", "S256");
+      response.writeHead(302, { Location: authorizeUrl.toString(), "Cache-Control": "no-store" });
+      response.end();
+      return;
+    }
+    const state = String(url.searchParams.get("state") || "");
+    const code = String(url.searchParams.get("code") || "");
+    const stateData = oauthStates.get(state);
+    oauthStates.delete(state);
+    const cookieState = getCookies(request).admin_oauth_state;
+    response.setHeader("Set-Cookie", oauthStateCookie("", 0));
+    if (!stateData || stateData.type !== "user" || stateData.provider !== provider || !code || cookieState !== state) {
+      response.writeHead(302, { Location: `${oauthUserUrl()}?oauth_error=invalid_state` });
+      response.end();
+      return;
+    }
+    let tokenResponse;
+    try {
+      tokenResponse = await fetchWithTimeout(metadata.token_endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
+        body: new URLSearchParams({ grant_type: "authorization_code", code, redirect_uri: stateData.redirectUri, client_id: config.clientId, client_secret: config.clientSecret, code_verifier: stateData.verifier }),
+      });
+    } catch (error) {
+      if (error.name === "TimeoutError" || error.name === "AbortError") throw httpError(503, "OAuth 令牌服务响应超时");
+      throw httpError(503, "无法连接 OAuth 令牌服务");
+    }
+    if (!tokenResponse.ok) throw httpError(401, "OAuth 登录失败，请重试");
+    const tokens = await tokenResponse.json();
+    let userResponse;
+    try {
+      userResponse = await fetchWithTimeout(metadata.userinfo_endpoint, { headers: { Authorization: `Bearer ${tokens.access_token}` } });
+    } catch (error) {
+      if (error.name === "TimeoutError" || error.name === "AbortError") throw httpError(503, "OAuth 用户信息服务响应超时");
+      throw httpError(503, "无法连接 OAuth 用户信息服务");
+    }
+    if (!userResponse.ok) throw httpError(401, "无法读取 OAuth 用户信息");
+    const profile = await userResponse.json();
+    const email = String(profile.email || profile.preferred_username || "").trim().toLowerCase();
+    if (!email || profile.email_verified !== true || !isEmail(email)) {
+      response.writeHead(302, { Location: `${oauthUserUrl()}?oauth_error=unverified_email` });
+      response.end();
+      return;
+    }
+    let user = (await query("SELECT * FROM users WHERE email = $1", [email])).rows[0];
+    if (!user) {
+      const record = createPasswordRecord(makeToken());
+      user = (await query(
+        `INSERT INTO users (email, password_hash, password_salt, email_verified, verified_at)
+         VALUES ($1, $2, $3, true, now()) RETURNING *`,
+        [email, record.hash, record.salt],
+      )).rows[0];
+    } else if (!user.email_verified) {
+      user = (await query("UPDATE users SET email_verified = true, verified_at = COALESCE(verified_at, now()) WHERE id = $1 RETURNING *", [user.id])).rows[0];
+    }
+    await createSession("user", user.id, response);
+    response.setHeader("Set-Cookie", [oauthStateCookie("", 0), response.getHeader("Set-Cookie")]);
+    response.setHeader("Location", `${[...FRONTEND_ORIGINS][0] || ""}${stateData.nextPath || "/user/center"}`);
+    response.statusCode = 302;
+    response.end();
     return;
   }
 
@@ -2859,6 +3078,40 @@ async function handleRequest(request, response) {
     return;
   }
 
+  if (request.method === "GET" && path === "/api/admin/user-oauth") {
+    const providers = await Promise.all(["google", "custom"].map(async (provider) =>
+      safeUserOAuthProviderConfig(await getEffectiveUserOAuthProviderConfig(provider)),
+    ));
+    sendJson(response, 200, { providers }, request);
+    return;
+  }
+
+  if (request.method === "PATCH" && path === "/api/admin/user-oauth") {
+    const body = await readBody(request);
+    const providers = {};
+    for (const provider of ["google", "custom"]) {
+      const input = body?.[provider];
+      if (!input || typeof input !== "object") continue;
+      const current = await getEffectiveUserOAuthProviderConfig(provider);
+      const next = {
+        enabled: input.enabled === true,
+        issuer: String(input.issuer || "").trim().replace(/\/$/, ""),
+        clientId: String(input.clientId || "").trim(),
+        clientSecret: String(input.clientSecret || current.clientSecret || "").trim(),
+        redirectUri: String(input.redirectUri || "").trim(),
+      };
+      if (next.enabled && (!next.issuer || !next.clientId || !next.clientSecret || !next.redirectUri)) {
+        sendError(response, 400, `${provider === "google" ? "Google" : "自建身份平台"} 配置未填写完整`, request);
+        return;
+      }
+      await setSetting(`userOAuth.${provider}`, next);
+      providers[provider] = safeUserOAuthProviderConfig(next);
+    }
+    await addAuditLog(admin, "update_user_oauth", "system", "user-oauth", "更新前台用户 OAuth 配置");
+    sendJson(response, 200, { providers: Object.values(providers) }, request);
+    return;
+  }
+
   if (request.method === "PATCH" && path === "/api/admin/settings") {
     const body = await readBody(request);
     if (typeof body.allowUserRegistration === "boolean") {
@@ -2926,6 +3179,11 @@ async function handleRequest(request, response) {
     if (request.method === "POST" && path === "/api/admin/mail-settings/test") {
       const body = await readBody(request);
       const recipient = String(body.recipient || admin.email).trim();
+      const mailSettings = await getMailSettings();
+      if (!mailSettings.enabled || mailSettings.driver === "null") {
+        sendError(response, 400, "邮件服务未启用，无法发送测试邮件", request);
+        return;
+      }
       await sendMail(recipient, "promo-code 测试邮件", "这是一封测试邮件。", "<p>这是一封测试邮件。</p>");
       sendJson(response, 200, { message: "测试邮件已发送" }, request);
       return;

@@ -8,6 +8,7 @@ import {
   Ban,
   Check,
   CheckCircle2,
+  CalendarDays,
   ChevronDown,
   ChevronRight,
   Clipboard,
@@ -179,7 +180,124 @@ async function apiRequest(path, options = {}) {
 
 const adminApiRequest = apiRequest;
 
+function Switch({ checked, onChange, label, disabled = false }) {
+  return (
+    <span className="admin-switch-control">
+      <button
+        className={`admin-switch${checked ? " is-on" : ""}`}
+        type="button"
+        role="switch"
+        aria-checked={checked}
+        aria-label={label}
+        disabled={disabled}
+        onClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          onChange(!checked);
+        }}
+      >
+        <span className="admin-switch-thumb" />
+      </button>
+      <small>{checked ? "开启中" : "关闭中"}</small>
+    </span>
+  );
+}
+
+function DateInput({ value, min, required = false, onChange }) {
+  const inputRef = useRef(null);
+
+  const openPicker = () => {
+    if (typeof inputRef.current?.showPicker === "function") {
+      inputRef.current.showPicker();
+    } else {
+      inputRef.current?.focus();
+    }
+  };
+
+  return (
+    <div className="admin-date-input">
+      <input
+        ref={inputRef}
+        type="date"
+        value={value}
+        min={min}
+        required={required}
+        onChange={onChange}
+      />
+      <button
+        className="admin-date-picker-button"
+        type="button"
+        aria-label="打开日期选择器"
+        onClick={openPicker}
+      >
+        <CalendarDays size={16} aria-hidden="true" />
+      </button>
+    </div>
+  );
+}
+
+function SearchableSelect({ options, value, onChange, placeholder, required = false }) {
+  const selected = options.find((option) => option.value === value);
+  const [query, setQuery] = useState(selected?.label || "");
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    setQuery(selected?.label || "");
+  }, [value, selected?.label]);
+
+  const filteredOptions = options.filter((option) =>
+    option.label.toLowerCase().includes(query.trim().toLowerCase()),
+  );
+
+  return (
+    <div className="searchable-select">
+      <input
+        type="text"
+        role="combobox"
+        aria-expanded={open}
+        aria-autocomplete="list"
+        value={query}
+        placeholder={placeholder}
+        required={required}
+        onFocus={() => setOpen(true)}
+        onChange={(event) => {
+          setQuery(event.target.value);
+          onChange("");
+          setOpen(true);
+        }}
+        onBlur={() => window.setTimeout(() => setOpen(false), 120)}
+      />
+      {open && (
+        <div className="searchable-select-menu" role="listbox">
+          {filteredOptions.length ? (
+            filteredOptions.map((option) => (
+              <button
+                type="button"
+                role="option"
+                aria-selected={option.value === value}
+                className="searchable-select-option"
+                key={option.value}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => {
+                  onChange(option.value);
+                  setQuery(option.label);
+                  setOpen(false);
+                }}
+              >
+                {option.label}
+              </button>
+            ))
+          ) : (
+            <span className="searchable-select-empty">没有匹配的优惠码</span>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 const DEFAULT_MAIL_SETTINGS = {
+  enabled: true,
   fromAddress: "",
   contentFormat: "multipart",
   driver: "smtp",
@@ -202,6 +320,7 @@ function normalizeMailSettings(settings = {}) {
       settings.from_address ||
       settings.mailFromAddress ||
       DEFAULT_MAIL_SETTINGS.fromAddress,
+    enabled: settings.enabled !== false,
     contentFormat:
       settings.contentFormat ||
       settings.content_format ||
@@ -251,6 +370,7 @@ function buildMailSettingsPayload(form) {
   }
 
   return {
+    enabled: form.enabled,
     fromAddress: form.fromAddress.trim(),
     contentFormat: form.contentFormat,
     driver: form.driver,
@@ -1185,6 +1305,21 @@ function UserLogin({ navigate, onLogin, nextPath = "/user/center" }) {
   const [error, setError] = useState("");
 
   const [submitting, setSubmitting] = useState(false);
+  const [oauthProviders, setOauthProviders] = useState([]);
+  const [mailEnabled, setMailEnabled] = useState(true);
+
+  useEffect(() => {
+    apiRequest("/api/auth/user/oauth/providers")
+      .then((data) => setOauthProviders(Array.isArray(data?.providers) ? data.providers : []))
+      .catch(() => setOauthProviders([]));
+    apiRequest("/api/settings/public")
+      .then((data) => setMailEnabled(data?.mailEnabled !== false))
+      .catch(() => {});
+    const oauthError = new URLSearchParams(window.location.search).get("oauth_error");
+    if (oauthError) {
+      setError(oauthError === "unverified_email" ? "授权平台未提供已验证邮箱" : "授权登录失败，请重试");
+    }
+  }, []);
 
   const submit = async (event) => {
     event.preventDefault();
@@ -1225,24 +1360,45 @@ function UserLogin({ navigate, onLogin, nextPath = "/user/center" }) {
           placeholder="请输入密码"
           onChange={setPassword}
         />
-        <button
-          className="text-button auth-forgot-link"
-          type="button"
-          onClick={() => navigate("/user/forgot-password")}
-        >
-          忘记密码？
-        </button>
+        {mailEnabled && (
+          <button
+            className="text-button auth-forgot-link"
+            type="button"
+            onClick={() => navigate("/user/forgot-password")}
+          >
+            忘记密码？
+          </button>
+        )}
         {error && <p className="form-error">{error}</p>}
         <button className="primary-button full-width" type="submit" disabled={submitting}>
           {submitting ? "登录中..." : "登录"}
           <LogIn size={16} />
         </button>
-        <p className="auth-switch">
-          还没有账号？
-          <button type="button" onClick={() => navigate("/user/register")}>
-            注册
-          </button>
-        </p>
+        {oauthProviders.length > 0 && (
+          <div className="auth-oauth-login">
+            <div className="auth-login-divider"><span>或使用授权平台登录</span></div>
+            {oauthProviders.map((provider) => (
+              <a
+                className="secondary-button full-width auth-oauth-button"
+                href={`${API_BASE_URL}/api/auth/user/oauth/${provider.id}?next=${encodeURIComponent(nextPath)}`}
+                key={provider.id}
+              >
+                {provider.name} 登录
+                <ExternalLink size={16} />
+              </a>
+            ))}
+          </div>
+        )}
+        {mailEnabled ? (
+          <p className="auth-switch">
+            还没有账号？
+            <button type="button" onClick={() => navigate("/user/register")}>
+              注册
+            </button>
+          </p>
+        ) : (
+          <p className="auth-switch auth-service-disabled">邮箱服务已关闭，暂不支持注册和找回密码。</p>
+        )}
       </form>
     </AuthPage>
   );
@@ -1717,6 +1873,7 @@ const ADMIN_NAV_ITEMS = [
   { path: "/admin/announcements", label: "公告管理", icon: Megaphone },
   { path: "/admin/audit-logs", label: "操作日志", icon: FileText },
   { path: "/admin/mail", label: "邮件配置", icon: Mail },
+  { path: "/admin/user-oauth", label: "第三方登录", icon: Globe2 },
   { path: "/admin/settings", label: "系统设置", icon: Settings },
 ];
 
@@ -1852,6 +2009,8 @@ function AdminConsole({ path, session, navigate, onLogout, showToast }) {
     page = <AdminAuditLogs refreshKey={refreshKey} />;
   } else if (path === "/admin/mail") {
     page = <AdminMailSettings refreshKey={refreshKey} showToast={showToast} />;
+  } else if (path === "/admin/user-oauth") {
+    page = <AdminUserOAuthSettings showToast={showToast} />;
   } else if (path === "/admin/settings") {
     page = <AdminSettings session={session} showToast={showToast} />;
   } else {
@@ -1972,6 +2131,9 @@ function getAdminPageMeta(path) {
   }
   if (path.startsWith("/admin/mail")) {
     return { title: "邮件配置" };
+  }
+  if (path.startsWith("/admin/user-oauth")) {
+    return { title: "第三方登录" };
   }
   if (path.startsWith("/admin/settings")) {
     return { title: "系统设置" };
@@ -2469,6 +2631,7 @@ function AdminPlacements({ refreshKey, showToast }) {
   const [deals, setDeals] = useState([]);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [dealSearch, setDealSearch] = useState("");
   const [form, setForm] = useState({
     dealId: "",
     placementType: "sponsored",
@@ -2507,6 +2670,9 @@ function AdminPlacements({ refreshKey, showToast }) {
 
   const availableDeals = deals.filter(
     (deal) => deal.status === "published" && deal.adminStatus !== "removed",
+  );
+  const filteredAvailableDeals = availableDeals.filter((deal) =>
+    `${deal.code} ${deal.storeName}`.toLowerCase().includes(dealSearch.trim().toLowerCase()),
   );
 
   const updateForm = (key, value) => {
@@ -2581,13 +2747,19 @@ function AdminPlacements({ refreshKey, showToast }) {
           <div className="placement-form-grid">
             <label className="admin-field">
               <span>优惠码</span>
+              <input
+                type="search"
+                value={dealSearch}
+                placeholder="先搜索优惠码或商户名称"
+                onChange={(event) => setDealSearch(event.target.value)}
+              />
               <select
                 value={form.dealId}
                 required
                 onChange={(event) => updateForm("dealId", event.target.value)}
               >
                 <option value="">请选择优惠码</option>
-                {availableDeals.map((deal) => (
+                {filteredAvailableDeals.map((deal) => (
                   <option value={deal.id} key={deal.id}>
                     {deal.code} · {deal.storeName}
                   </option>
@@ -2613,6 +2785,7 @@ function AdminPlacements({ refreshKey, showToast }) {
                 value={form.priority}
                 onChange={(event) => updateForm("priority", event.target.value)}
               />
+              <small className="admin-field-hint">数值越大，排序越靠前；相同数值按创建时间排序。</small>
             </label>
             <label className="admin-field">
               <span>赞助名称</span>
@@ -2625,8 +2798,7 @@ function AdminPlacements({ refreshKey, showToast }) {
             </label>
             <label className="admin-field">
               <span>开始日期</span>
-              <input
-                type="date"
+              <DateInput
                 value={form.startsAt}
                 required
                 onChange={(event) => updateForm("startsAt", event.target.value)}
@@ -2634,8 +2806,7 @@ function AdminPlacements({ refreshKey, showToast }) {
             </label>
             <label className="admin-field">
               <span>结束日期</span>
-              <input
-                type="date"
+              <DateInput
                 value={form.endsAt}
                 min={form.startsAt}
                 onChange={(event) => updateForm("endsAt", event.target.value)}
@@ -2652,7 +2823,7 @@ function AdminPlacements({ refreshKey, showToast }) {
           </label>
           <div className="admin-settings-footer">
             <span className="admin-field-hint">同一商户同一时间只能有一个赞助置顶优惠码</span>
-            <button className="admin-primary-button" type="submit" disabled={submitting || !availableDeals.length}>
+            <button className="admin-primary-button placement-submit-button" type="submit" disabled={submitting || !availableDeals.length}>
               <Pin size={15} />
               {submitting ? "保存中..." : "创建置顶"}
             </button>
@@ -3541,6 +3712,27 @@ function AdminAnnouncements({ refreshKey, showToast }) {
     }
   };
 
+  const toggleAnnouncement = async (enabled) => {
+    const previous = form;
+    const next = { ...form, enabled };
+    if (enabled && !next.content.trim()) {
+      setError("启用公告前请填写公告内容");
+      return;
+    }
+    setForm(next);
+    try {
+      const data = await adminApiRequest("/api/admin/announcement", {
+        method: "PATCH",
+        body: JSON.stringify(normalizeAnnouncement({ ...next, updatedAt: new Date().toISOString() })),
+      });
+      setForm(normalizeAnnouncement(data?.announcement || data?.data?.announcement || data));
+      showToast(enabled ? "公告已开启" : "公告已关闭", "success");
+    } catch (requestError) {
+      setForm(previous);
+      setError(requestError.message || "公告开关保存失败");
+    }
+  };
+
   const previewAnnouncement = normalizeAnnouncement(form);
 
   return (
@@ -3614,10 +3806,10 @@ function AdminAnnouncements({ refreshKey, showToast }) {
                   <strong>启用公告</strong>
                   <small>启用后，符合日期条件的公告会显示在公开站点。</small>
                 </span>
-                <input
-                  type="checkbox"
+                <Switch
                   checked={form.enabled}
-                  onChange={(event) => updateField("enabled", event.target.checked)}
+                  label="启用公告"
+                  onChange={toggleAnnouncement}
                 />
               </label>
               <div className="admin-announcement-date-grid">
@@ -3791,16 +3983,58 @@ function AdminMailSettings({ refreshKey, showToast }) {
     setForm((current) => ({ ...current, [field]: value }));
   };
 
+  const toggleMailService = async (enabled) => {
+    const previous = form;
+    setForm({ ...form, enabled });
+    setError("");
+    setSaving(true);
+    try {
+      const data = await adminApiRequest("/api/admin/mail-settings", {
+        method: "PUT",
+        body: JSON.stringify({ enabled }),
+      });
+      const settings = data?.settings || data?.data?.settings || data?.data || data;
+      setForm({ ...DEFAULT_MAIL_SETTINGS, ...normalizeMailSettings(settings) });
+      showToast(enabled ? "邮件服务已开启" : "邮件服务已关闭", "success");
+    } catch (requestError) {
+      setForm(previous);
+      setError(requestError.message || "邮件开关保存失败");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const toggleMailField = async (field, value) => {
+    const previous = form;
+    setForm({ ...form, [field]: value });
+    setSaving(true);
+    setError("");
+    try {
+      const data = await adminApiRequest("/api/admin/mail-settings", {
+        method: "PUT",
+        body: JSON.stringify({ smtp: { verifySsl: value } }),
+      });
+      const settings = data?.settings || data?.data?.settings || data?.data || data;
+      setForm({ ...DEFAULT_MAIL_SETTINGS, ...normalizeMailSettings(settings) });
+      showToast(value ? "开关已开启" : "开关已关闭", "success");
+    } catch (requestError) {
+      setForm(previous);
+      setError(requestError.message || "开关保存失败");
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const saveSettings = async (event) => {
     event.preventDefault();
     setError("");
 
-    if (!form.fromAddress.trim()) {
+    if (form.enabled && !form.fromAddress.trim()) {
       setError("请填写发件地址");
       return;
     }
 
-    if (form.driver === "smtp") {
+    if (form.enabled && form.driver === "smtp") {
       const port = Number(form.smtpPort);
       if (!form.smtpHost.trim() || !Number.isInteger(port) || port < 1 || port > 65535) {
         setError("SMTP 服务器地址和端口格式不正确");
@@ -3857,6 +4091,18 @@ function AdminMailSettings({ refreshKey, showToast }) {
       ) : (
         <form className="admin-mail-layout" onSubmit={saveSettings}>
           <AdminPanel title="基础配置">
+            <label className="admin-toggle-row">
+              <span>
+                <strong>启用邮件服务</strong>
+                <small>关闭后平台不会发送邮件。</small>
+              </span>
+              <Switch
+                checked={form.enabled}
+                label="启用邮件服务"
+                disabled={saving || testing}
+                onChange={toggleMailService}
+              />
+            </label>
             <div className="admin-setting-fields">
               <label className="admin-field">
                 <span>发件地址</span>
@@ -3864,7 +4110,7 @@ function AdminMailSettings({ refreshKey, showToast }) {
                   type="email"
                   value={form.fromAddress}
                   placeholder="no-reply@example.com"
-                  required
+                  required={form.enabled}
                   onChange={(event) => updateField("fromAddress", event.target.value)}
                 />
               </label>
@@ -3959,10 +4205,11 @@ function AdminMailSettings({ refreshKey, showToast }) {
                   <strong>验证 SSL 证书</strong>
                   <small>使用 TLS 或 SSL 时验证服务器证书。</small>
                 </span>
-                <input
-                  type="checkbox"
-                  checked={form.smtpVerifySsl}
-                  onChange={(event) => updateField("smtpVerifySsl", event.target.checked)}
+                <Switch
+                checked={form.smtpVerifySsl}
+                label="验证 SSL 证书"
+                disabled={saving || testing}
+                onChange={(value) => toggleMailField("smtpVerifySsl", value)}
                 />
               </label>
             </div>
@@ -3989,12 +4236,117 @@ function AdminMailSettings({ refreshKey, showToast }) {
   );
 }
 
+function AdminUserOAuthSettings({ showToast }) {
+  const siteOrigin = window.location.origin;
+  const apiOrigin = API_BASE_URL || siteOrigin;
+  const emptyProvider = { enabled: false, issuer: "", clientId: "", redirectUri: "", clientSecret: "", hasClientSecret: false };
+  const [providers, setProviders] = useState({ google: emptyProvider, custom: emptyProvider });
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    adminApiRequest("/api/admin/user-oauth")
+      .then((data) => {
+        const next = { google: emptyProvider, custom: emptyProvider };
+        for (const provider of data?.providers || []) next[provider.provider] = { ...next[provider.provider], ...provider, clientSecret: "" };
+        setProviders(next);
+      })
+      .catch((requestError) => setError(requestError.message || "加载授权配置失败"))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const update = (provider, field, value) => setProviders((current) => ({
+    ...current,
+    [provider]: { ...current[provider], [field]: value },
+  }));
+
+  const toggleProvider = async (id, enabled) => {
+    const previous = providers;
+    const next = { ...providers, [id]: { ...providers[id], enabled } };
+    setProviders(next);
+    setSaving(true);
+    setError("");
+    try {
+      const data = await adminApiRequest("/api/admin/user-oauth", {
+        method: "PATCH",
+        body: JSON.stringify(next),
+      });
+      const saved = { ...next };
+      for (const provider of data?.providers || []) saved[provider.provider] = { ...saved[provider.provider], ...provider, clientSecret: "" };
+      setProviders(saved);
+      showToast(enabled ? "第三方登录已开启" : "第三方登录已关闭", "success");
+    } catch (requestError) {
+      setProviders(previous);
+      setError(requestError.message || "第三方登录开关保存失败");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const save = async (event) => {
+    event.preventDefault();
+    setSaving(true);
+    setError("");
+    try {
+      const data = await adminApiRequest("/api/admin/user-oauth", {
+        method: "PATCH",
+        body: JSON.stringify(providers),
+      });
+      const next = { ...providers };
+      for (const provider of data?.providers || []) next[provider.provider] = { ...next[provider.provider], ...provider, clientSecret: "" };
+      setProviders(next);
+      showToast("第三方登录配置已保存", "success");
+    } catch (requestError) {
+      setError(requestError.message || "授权配置保存失败");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const providerForm = (id, title, defaultIssuer, callback) => {
+    const provider = providers[id];
+    return (
+      <AdminPanel title={title} description="启用后，前台用户登录页会显示该授权入口。">
+        <label className="admin-toggle-row">
+          <span><strong>启用 {title}</strong><small>仅创建或登录普通用户，不授予后台权限。</small></span>
+          <Switch
+            checked={provider.enabled}
+            label={`启用 ${title}`}
+            disabled={saving}
+            onChange={(value) => toggleProvider(id, value)}
+          />
+        </label>
+        <div className="admin-setting-fields">
+          <label className="admin-field"><span>Issuer / Discovery 地址</span><small>{id === "google" ? "Google 通常填写 https://accounts.google.com。" : "填写论坛授权中心提供的 Issuer 根地址，系统会自动读取 /.well-known/openid-configuration。"}</small><input value={provider.issuer} onChange={(event) => update(id, "issuer", event.target.value)} placeholder={defaultIssuer} /></label>
+          <label className="admin-field"><span>客户端 ID</span><input value={provider.clientId} onChange={(event) => update(id, "clientId", event.target.value)} /></label>
+          <label className="admin-field"><span>客户端密钥</span><input type="password" value={provider.clientSecret} placeholder={provider.hasClientSecret ? "已保存，留空保持不变" : "请输入客户端密钥"} autoComplete="new-password" onChange={(event) => update(id, "clientSecret", event.target.value)} /></label>
+          <label className="admin-field"><span>回调地址</span><input value={provider.redirectUri} onChange={(event) => update(id, "redirectUri", event.target.value)} placeholder={callback} /></label>
+        </div>
+      </AdminPanel>
+    );
+  };
+
+  if (loading) return <div className="admin-page"><AdminPageHeader title="第三方登录" /><AdminPanel title="登录配置"><div className="admin-empty-state">正在加载配置...</div></AdminPanel></div>;
+
+  return <div className="admin-page">
+    <AdminPageHeader eyebrow="用户访问" title="第三方登录" description="配置普通用户使用 Google 或自建身份平台登录。" />
+    <form className="admin-settings-layout" onSubmit={save}>
+      {providerForm("google", "Google", "https://accounts.google.com", `${apiOrigin}/api/auth/user/oauth/google/callback`)}
+      {providerForm("custom", "自建身份平台", "https://forum.example.com", `${apiOrigin}/api/auth/user/oauth/custom/callback`)}
+      {error && <p className="admin-form-error">{error}</p>}
+      <div className="admin-settings-footer"><button className="admin-primary-button" type="submit" disabled={saving}>{saving ? "保存中..." : "保存配置"}<Check size={16} /></button></div>
+    </form>
+  </div>;
+}
+
 function AdminSettings({ session, showToast }) {
   const [settings, setSettings] = useState(DEFAULT_ADMIN_SETTINGS);
   const [password, setPassword] = useState("");
   const [passwordConfirm, setPasswordConfirm] = useState("");
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
@@ -4007,7 +4359,10 @@ function AdminSettings({ session, showToast }) {
         };
         setSettings(nextSettings);
       })
-      .catch(() => {});
+      .catch((requestError) => setError(requestError.message || "系统设置加载失败"))
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
 
     return () => {
       cancelled = true;
@@ -4074,6 +4429,28 @@ function AdminSettings({ session, showToast }) {
     });
   };
 
+  const toggleSetting = async (field, value) => {
+    const previous = settings;
+    const next = { ...settings, [field]: value };
+    setSettings(next);
+    setSaving(true);
+    setError("");
+    try {
+      await adminApiRequest("/api/admin/settings", {
+        method: "PATCH",
+        body: JSON.stringify({ [field]: value }),
+      });
+      showToast(value ? "开关已开启" : "开关已关闭", "success");
+    } catch (requestError) {
+      setSettings(previous);
+      setError(requestError.message || "开关保存失败");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading) return <div className="admin-page"><AdminPageHeader title="系统设置" /><AdminPanel title="系统设置"><div className="admin-empty-state">正在加载配置...</div></AdminPanel></div>;
+
   return (
     <div className="admin-page">
       <AdminPageHeader
@@ -4088,12 +4465,11 @@ function AdminSettings({ session, showToast }) {
               <strong>允许用户注册</strong>
               <small>关闭后，公开站点将暂时停止创建新账号。</small>
             </span>
-            <input
-              type="checkbox"
+            <Switch
               checked={settings.allowUserRegistration}
-              onChange={(event) =>
-                setSettings({ ...settings, allowUserRegistration: event.target.checked })
-              }
+              label="允许用户注册"
+              disabled={saving}
+              onChange={(value) => toggleSetting("allowUserRegistration", value)}
             />
           </label>
           <div className="admin-setting-status">
@@ -4107,12 +4483,11 @@ function AdminSettings({ session, showToast }) {
               <strong>显示 GitHub 仓库入口</strong>
               <small>关闭后，公开站点顶部将隐藏 GitHub 图标。</small>
             </span>
-            <input
-              type="checkbox"
+            <Switch
               checked={settings.showGithubLink !== false}
-              onChange={(event) =>
-                setSettings({ ...settings, showGithubLink: event.target.checked })
-              }
+              label="显示 GitHub 仓库入口"
+              disabled={saving}
+              onChange={(value) => toggleSetting("showGithubLink", value)}
             />
           </label>
           <div className="admin-setting-fields admin-site-info-fields">
@@ -4169,15 +4544,11 @@ function AdminSettings({ session, showToast }) {
                 <strong>禁止同商户重复优惠码</strong>
                 <small>同一商户下，相同 code 只能保留一条。</small>
               </span>
-              <input
-                type="checkbox"
+              <Switch
                 checked={settings.preventDuplicateMerchantCodes !== false}
-                onChange={(event) =>
-                  setSettings({
-                    ...settings,
-                    preventDuplicateMerchantCodes: event.target.checked,
-                  })
-                }
+                label="禁止同商户重复优惠码"
+                disabled={saving}
+                onChange={(value) => toggleSetting("preventDuplicateMerchantCodes", value)}
               />
             </label>
           </div>

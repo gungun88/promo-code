@@ -1211,6 +1211,35 @@ select {
   font-size: 12px;
 }
 
+.auth-oauth-login {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: -2px;
+}
+
+.auth-login-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #999999;
+  font-size: 12px;
+}
+
+.auth-login-divider::before,
+.auth-login-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: #555555;
+}
+
+.auth-oauth-button {
+  gap: 7px;
+  color: #e0e0e0;
+  text-decoration: none;
+}
+
 .auth-switch {
   margin: 1px 0 0;
   color: #8c8c8c;
@@ -2018,6 +2047,34 @@ select {
   margin-top: 2px;
 }
 
+.admin-oauth-login {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.admin-login-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #918d94;
+  font-size: 12px;
+}
+
+.admin-login-divider::before,
+.admin-login-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: #e3e4e8;
+}
+
+.admin-oauth-button {
+  width: 100%;
+  text-decoration: none;
+}
+
 .admin-form-error {
   margin: -3px 0 0;
   color: #bd3a4a;
@@ -2419,6 +2476,48 @@ select {
 
 .placement-note-field {
   margin-top: 14px;
+}
+
+.admin-date-input {
+  position: relative;
+}
+
+.admin-date-picker-button {
+  position: absolute;
+  top: 50%;
+  right: 11px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  color: #77727a;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  transform: translateY(-50%);
+}
+
+.admin-date-picker-button:hover,
+.admin-date-picker-button:focus-visible {
+  color: #9e005d;
+}
+
+.admin-date-picker-button:focus-visible {
+  outline: 2px solid #9e005d;
+  outline-offset: 2px;
+}
+
+.admin-date-input input {
+  padding-right: 36px;
+}
+
+.admin-date-input input::-webkit-calendar-picker-indicator {
+  opacity: 0;
+}
+
+.placement-submit-button {
+  margin-top: 15px;
+  margin-bottom: 0;
 }
 
 .placement-table {
@@ -3172,10 +3271,72 @@ select {
   font-size: 13px;
 }
 
-.admin-toggle-row input {
-  width: 38px;
-  height: 21px;
-  accent-color: #9e005d;
+.admin-switch-control {
+  display: inline-flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+}
+
+.admin-switch-control small {
+  color: #99949b;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.admin-toggle-row .admin-switch-control small {
+  font-size: 11px;
+}
+
+.admin-toggle-row .admin-switch-thumb {
+  display: block;
+  flex-direction: initial;
+}
+
+.admin-switch {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+  width: 44px;
+  height: 24px;
+  align-items: center;
+  padding: 2px;
+  cursor: pointer;
+  background: #d7d4d8;
+  border: 2px solid transparent;
+  border-radius: 999px;
+  transition: background-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.admin-switch.is-on {
+  background: #9e005d;
+}
+
+.admin-switch:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px #fff, 0 0 0 4px #9e005d;
+}
+
+.admin-switch:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.admin-switch-thumb {
+  display: block;
+  width: 16px;
+  height: 16px;
+  background: #fff;
+  border-radius: 50%;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 25%);
+  transform: translateX(0);
+  transition: transform 0.2s ease;
+}
+
+.admin-switch.is-on .admin-switch-thumb {
+  transform: translateX(20px);
 }
 
 .admin-setting-status {
