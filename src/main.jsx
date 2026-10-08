@@ -59,10 +59,6 @@ const API_BASE_URL = (
 const DEFAULT_ADMIN_SETTINGS = {
   allowUserRegistration: true,
   siteStatus: "正常运行",
-  merchantDealTotalLimit: 50,
-  merchantDealPublicLimit: 10,
-  merchantDealDailyLimit: 5,
-  preventDuplicateMerchantCodes: true,
   showGithubLink: true,
   githubUrl: GITHUB_REPOSITORY_URL,
 };
@@ -585,6 +581,8 @@ function App() {
     ) : (
       <UserLogin navigate={navigate} onLogin={onUserLogin} />
     );
+  } else if (path === "/user/points") {
+    content = userSession ? <UserPoints navigate={navigate} showToast={showToast} userSession={userSession} /> : <UserLogin navigate={navigate} onLogin={onUserLogin} nextPath="/user/points" />;
   } else if (path === "/create-deal") {
     content = userSession ? (
       <MerchantDashboard
@@ -753,6 +751,17 @@ function SiteHeader({ path, navigate, userSession, onUserLogout }) {
                     >
                       <Store size={15} />
                       创建优惠
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setUserMenuOpen(false);
+                        navigate("/user/points");
+                      }}
+                    >
+                      <Pin size={15} />
+                      {"\u79ef\u5206\u4e2d\u5fc3"}
                     </button>
                     <button
                       type="button"
@@ -1021,6 +1030,11 @@ function PublicDirectory({ navigate, showToast, userSession }) {
     setReportTarget(deal);
   };
 
+  const openPlacement = (deal) => {
+    if (!requireUser()) return;
+    navigate(`/user/points?deal=${encodeURIComponent(deal.id)}`);
+  };
+
   const submitReport = async (reason) => {
     if (!reportTarget || !userSession) return;
     try {
@@ -1103,6 +1117,7 @@ function PublicDirectory({ navigate, showToast, userSession }) {
                     onCopy={() => copyCode(deal)}
                     onFavorite={() => toggleFavorite(deal)}
                     onReport={() => openReport(deal)}
+                    onPlacement={() => openPlacement(deal)}
                   />
                 ))}
               </tbody>
@@ -1174,7 +1189,7 @@ function FaviconAvatar({ website, fallback }) {
   );
 }
 
-function DealRow({ deal, isFavorite, onCopy, onFavorite, onReport }) {
+function DealRow({ deal, isFavorite, onCopy, onFavorite, onReport, onPlacement }) {
   const remaining = daysUntil(deal.endAt);
   return (
     <tr>
@@ -1228,6 +1243,15 @@ function DealRow({ deal, isFavorite, onCopy, onFavorite, onReport }) {
       </td>
       <td data-label="操作">
         <div className="deal-actions">
+          <button
+            className="deal-action-button"
+            type="button"
+            title="置顶推广"
+            aria-label="置顶推广"
+            onClick={onPlacement}
+          >
+            <Pin size={16} />
+          </button>
           <button
             className={`deal-action-button ${isFavorite ? "is-active" : ""}`}
             type="button"
@@ -1856,6 +1880,22 @@ function UserCenter({ userSession, navigate, showToast }) {
   );
 }
 
+function UserPoints({ navigate, showToast, userSession }) {
+  const text = {
+    center: "\u79ef\u5206\u4e2d\u5fc3", service: "\u79ef\u5206\u4e0e\u63a8\u5e7f\u670d\u52a1", intro: "\u5151\u6362\u79ef\u5206\u3001\u8d2d\u4e70\u521b\u5efa\u6b21\u6570\uff0c\u5e76\u4e3a\u4f18\u60e0\u7801\u8d2d\u4e70\u7f6e\u9876\u63a8\u5e7f\u3002", points: "\u53ef\u7528\u79ef\u5206", quota: "\u53ef\u7528\u521b\u5efa\u6b21\u6570", redeem: "\u79ef\u5206\u5151\u6362", placement: "\u7f6e\u9876\u63a8\u5e7f", creation: "\u521b\u5efa\u6b21\u6570", history: "\u4f7f\u7528\u8bb0\u5f55", redeemCode: "\u5151\u6362\u7801", redeemNow: "\u7acb\u5373\u5151\u6362", getCode: "\u83b7\u53d6\u5151\u6362\u7801", buy: "\u8d2d\u4e70", confirm: "\u786e\u8ba4\u8d2d\u4e70", pointsLedger: "\u79ef\u5206\u6d41\u6c34", placementHistory: "\u7f6e\u9876\u8bb0\u5f55", quotaLedger: "\u521b\u5efa\u6b21\u6570\u6d41\u6c34", more: "\u67e5\u770b\u66f4\u591a", collapse: "\u6536\u8d77", back: "\u8fd4\u56de\u4f18\u60e0\u7801\u76ee\u5f55" , loading: "\u6b63\u5728\u52a0\u8f7d...", empty: "\u6682\u65e0\u8bb0\u5f55"
+  };
+  const [data, setData] = useState({ balance: 0, packages: [], deals: [], redemptionUrl: "", creationQuota: { available: 0, packages: [] } });
+  const [ledger, setLedger] = useState([]); const [placements, setPlacements] = useState([]); const [quotaLedger, setQuotaLedger] = useState([]); const [code, setCode] = useState(""); const [dealId, setDealId] = useState(""); const [packageId, setPackageId] = useState(""); const [creationPackageId, setCreationPackageId] = useState(""); const [loading, setLoading] = useState(true); const [expanded, setExpanded] = useState({ ledger: false, placements: false, quota: false });
+  const reload = async () => { try { const [points, history, placementHistory, quotaHistory] = await Promise.all([apiRequest("/api/user/points"), apiRequest("/api/user/points/ledger"), apiRequest("/api/user/points/placements"), apiRequest("/api/user/creation-quota/ledger")]); setData(points || {}); setLedger(history?.ledger || []); setPlacements(placementHistory?.placements || []); setQuotaLedger(quotaHistory?.ledger || []); setDealId((v) => v || new URLSearchParams(window.location.search).get("deal") || points?.deals?.[0]?.id || ""); setPackageId((v) => v || points?.packages?.[0]?.id || ""); setCreationPackageId((v) => v || points?.creationQuota?.packages?.[0]?.id || ""); } catch (error) { showToast(error.message || "\u79ef\u5206\u6570\u636e\u52a0\u8f7d\u5931\u8d25"); } finally { setLoading(false); } };
+  useEffect(() => { reload(); }, [userSession.accountId]);
+  const redeem = async (event) => { event.preventDefault(); try { await apiRequest("/api/user/points/redeem", { method: "POST", body: JSON.stringify({ code }) }); setCode(""); await reload(); showToast("\u5151\u6362\u6210\u529f", "success"); } catch (error) { showToast(error.message || "\u5151\u6362\u5931\u8d25"); } };
+  const purchaseCreation = async () => { try { await apiRequest("/api/user/creation-quota/purchase", { method: "POST", body: JSON.stringify({ packageId: creationPackageId }) }); await reload(); showToast("\u521b\u5efa\u6b21\u6570\u8d2d\u4e70\u6210\u529f", "success"); } catch (error) { showToast(error.message || "\u8d2d\u4e70\u5931\u8d25"); } };
+  const purchasePlacement = async () => { try { await apiRequest("/api/user/points/placements", { method: "POST", body: JSON.stringify({ promoCodeId: dealId, packageId }) }); await reload(); showToast("\u7f6e\u9876\u63a8\u5e7f\u5df2\u751f\u6548", "success"); } catch (error) { showToast(error.message || "\u7f6e\u9876\u8d2d\u4e70\u5931\u8d25"); } };
+  const visible = (items, key) => expanded[key] ? items : items.slice(0, 2); const toggle = (key) => setExpanded((v) => ({ ...v, [key]: !v[key] })); const more = (key, count) => count > 2 && <button className="text-button" type="button" onClick={() => toggle(key)}>{expanded[key] ? text.collapse : `${text.more}\uFF08${count - 2}\u6761\uFF09`}</button>;
+  const labels = { deal: "\u9009\u62e9\u4f18\u60e0\u7801", package: "\u9009\u62e9\u7f6e\u9876\u5957\u9910", quotaPackage: "\u9009\u62e9\u521b\u5efa\u6b21\u6570\u5957\u9910", unknown: "\u5176\u4ed6", dateSeparator: " \u00b7 ", day: "\u5929", pointsUnit: " \u79ef\u5206", quotaUnit: " \u6b21", purchased: "\u8d2d\u4e70\u521b\u5efa\u6b21\u6570", consumed: "\u6d88\u8017\u521b\u5efa\u6b21\u6570", freeGrant: "\u514d\u8d39\u989d\u5ea6", never: "\u672a\u5f00\u59cb" };
+  return <main className="user-main"><section className="user-topline"><div className="wrapper user-topline-inner"><div><p className="eyebrow">{text.center}</p><h1>{text.service}</h1><p>{text.intro}</p></div></div></section><section className="user-workspace wrapper"><nav className="points-anchor-nav" aria-label={text.center}><a href="#redemption">{text.redeem}</a><a href="#placement">{text.placement}</a><a href="#creation-quota">{text.creation}</a><a href="#history">{text.history}</a></nav><div className="user-summary-grid"><div className="user-summary-item"><strong>{data.balance || 0}</strong><span>{text.points}</span></div><div className="user-summary-item"><strong>{data.creationQuota?.available || 0}</strong><span>{text.quota}</span></div></div><section className="user-section" id="redemption"><div className="section-heading compact"><h2>{text.redeemCode}</h2></div><form className="auth-form" onSubmit={redeem}><input value={code} onChange={(e) => setCode(e.target.value)} placeholder="LS-ABCD-EFGH-JKMN" required /><div className="form-actions"><button className="primary-button" type="submit">{text.redeemNow}</button>{data.redemptionUrl && <a className="secondary-button" href={data.redemptionUrl} target="_blank" rel="noopener noreferrer">{text.getCode}</a>}</div></form></section><section className="user-section" id="placement"><div className="section-heading compact"><h2>{text.placement}</h2></div>{data.deals?.length && data.packages?.length ? <div className="form-actions points-purchase-form"><select aria-label={labels.deal} value={dealId} onChange={(e) => setDealId(e.target.value)}>{data.deals.map((deal) => <option key={deal.id} value={deal.id}>{deal.code}{labels.dateSeparator}{deal.storeName}</option>)}</select><select aria-label={labels.package} value={packageId} onChange={(e) => setPackageId(e.target.value)}>{data.packages.map((item) => <option key={item.id} value={item.id}>{item.days}{labels.day}{labels.dateSeparator}{item.points}{labels.pointsUnit}</option>)}</select><button className="primary-button" type="button" onClick={purchasePlacement}>{text.confirm}</button></div> : <div className="user-empty">{text.empty}</div>}</section><section className="user-section" id="creation-quota"><div className="section-heading compact"><h2>{text.creation}</h2></div>{data.creationQuota?.packages?.length ? <div className="form-actions points-purchase-form"><select aria-label={labels.quotaPackage} value={creationPackageId} onChange={(e) => setCreationPackageId(e.target.value)}>{data.creationQuota.packages.map((item) => <option key={item.id} value={item.id}>{item.name}{labels.dateSeparator}{item.quota}{labels.quotaUnit} / {item.points}{labels.pointsUnit}</option>)}</select><button className="primary-button" type="button" onClick={purchaseCreation}>{text.buy}{text.creation}</button></div> : <div className="user-empty">{text.empty}</div>}</section><section className="user-section" id="history"><div className="section-heading compact"><h2>{text.history}</h2></div><div className="history-block"><div className="history-heading"><h3>{text.pointsLedger}</h3>{more("ledger", ledger.length)}</div>{loading ? <div className="user-empty">{text.loading}</div> : <div className="user-list">{visible(ledger, "ledger").map((item) => <div className="user-list-row" key={item.id}><div><strong>{item.entry_type === "redemption" ? text.redeem : item.entry_type === "placement_purchase" ? text.placement : labels.unknown}</strong><span>{item.description}{labels.dateSeparator}{formatAdminDate(item.created_at)}</span></div><strong>{item.delta > 0 ? "+" : ""}{item.delta}</strong></div>)}</div>}</div><div className="history-block"><div className="history-heading"><h3>{text.placementHistory}</h3>{more("placements", placements.length)}</div><div className="user-list">{visible(placements, "placements").map((item) => <div className="user-list-row" key={item.id}><div><strong>{item.code}{labels.dateSeparator}{item.store_name}</strong><span>{item.startsAt || labels.never}{labels.dateSeparator}{item.endsAt || labels.never}{labels.dateSeparator}{item.duration_days}{labels.day}</span></div><strong>{item.points_spent}{labels.pointsUnit}</strong></div>)}</div></div><div className="history-block"><div className="history-heading"><h3>{text.quotaLedger}</h3>{more("quota", quotaLedger.length)}</div><div className="user-list">{visible(quotaLedger, "quota").map((item) => <div className="user-list-row" key={item.id}><div><strong>{item.entry_type === "purchase" ? labels.purchased : item.entry_type === "consume" ? labels.consumed : item.entry_type === "grant" || item.entry_type === "free_grant" || item.entry_type === "initial_grant" ? labels.freeGrant : labels.unknown}</strong><span>{item.description}{labels.dateSeparator}{formatAdminDate(item.created_at)}</span></div><strong>{item.delta > 0 ? "+" : ""}{item.delta}</strong></div>)}</div></div></section><button className="back-link" type="button" onClick={() => navigate("/")}>{text.back}</button></section></main>;
+}
+
 function AdminRouteRedirect({ navigate }) {
   useEffect(() => {
     navigate("/admin/login");
@@ -1867,7 +1907,7 @@ const ADMIN_NAV_ITEMS = [
   { path: "/admin", label: "数据概览", icon: LayoutDashboard },
   { path: "/admin/promo-codes", label: "优惠码管理", icon: Tags },
   { path: "/admin/merchants", label: "发布者管理", icon: Users },
-  { path: "/admin/placements", label: "置顶推广", icon: Pin },
+  { path: "/admin/points", label: "积分中心", icon: Pin },
   { path: "/admin/reports", label: "举报管理", icon: Flag },
   { path: "/admin/website-filter", label: "网站过滤", icon: ShieldAlert },
   { path: "/admin/announcements", label: "公告管理", icon: Megaphone },
@@ -1980,8 +2020,8 @@ function AdminConsole({ path, session, navigate, onLogout, showToast }) {
         showToast={showToast}
       />
     );
-  } else if (path === "/admin/placements") {
-    page = <AdminPlacements refreshKey={refreshKey} showToast={showToast} />;
+  } else if (path === "/admin/points" || path === "/admin/placements") {
+    page = <AdminPoints refreshKey={refreshKey} showToast={showToast} />;
   } else if (path === "/admin/merchants") {
     page = (
       <AdminMerchants
@@ -2111,8 +2151,8 @@ function getAdminPageMeta(path) {
   if (path.startsWith("/admin/promo-codes")) {
     return { title: "优惠码管理" };
   }
-  if (path.startsWith("/admin/placements")) {
-    return { title: "置顶推广" };
+  if (path.startsWith("/admin/points") || path.startsWith("/admin/placements")) {
+    return { title: "积分中心" };
   }
   if (path.startsWith("/admin/merchants")) {
     return { title: "发布者管理" };
@@ -2623,6 +2663,16 @@ function AdminPromoCodes({ refreshKey, showToast }) {
       </AdminPanel>
     </div>
   );
+}
+
+function AdminPoints({ refreshKey, showToast }) {
+  const [settings, setSettings] = useState({ redemptionUrl: "", packages: [], creationRule: { preventDuplicateMerchantCodes: true }, creationPackages: [] }); const [form, setForm] = useState({ quantity: 10, pointsPerCode: 100, note: "" }); const [codes, setCodes] = useState(""); const [records, setRecords] = useState([]); const [selected, setSelected] = useState([]); const [status, setStatus] = useState(""); const [search, setSearch] = useState(""); const [page, setPage] = useState(1); const [total, setTotal] = useState(0); const pageSize = 10;
+  const reload = () => { const q = new URLSearchParams({ page, limit: pageSize }); if (status) q.set("status", status); if (search) q.set("q", search); return adminApiRequest(`/api/admin/points/code-batches?${q}`).then((data) => { setRecords(data.codes || []); setTotal(Number(data.total || 0)); setSelected([]); }); };
+  useEffect(() => { adminApiRequest("/api/admin/points/settings").then((data) => setSettings(data.settings || {})).catch((error) => showToast(error.message || "\u79ef\u5206\u8bbe\u7f6e\u52a0\u8f7d\u5931\u8d25")); }, [refreshKey]); useEffect(() => { reload().catch((error) => showToast(error.message || "\u5151\u6362\u7801\u8bb0\u5f55\u52a0\u8f7d\u5931\u8d25")); }, [refreshKey, page, status, search]);
+  const saveCodes = async (event) => { event.preventDefault(); try { const data = await adminApiRequest("/api/admin/points/code-batches", { method: "POST", body: JSON.stringify(form) }); setCodes(data.codes.join("\n")); await reload(); showToast("\u5151\u6362\u7801\u5df2\u751f\u6210", "success"); } catch (error) { showToast(error.message || "\u751f\u6210\u5931\u8d25"); } };
+  const saveSettings = async () => { try { await adminApiRequest("/api/admin/points/settings", { method: "PUT", body: JSON.stringify(settings) }); showToast("\u79ef\u5206\u8bbe\u7f6e\u5df2\u4fdd\u5b58", "success"); } catch (error) { showToast(error.message || "\u4fdd\u5b58\u5931\u8d25"); } };
+  const update = (key, index, field, value) => setSettings((v) => ({ ...v, [key]: v[key].map((x, i) => i === index ? { ...x, [field]: value } : x) })); const removePackage = (key, index) => setSettings((v) => ({ ...v, [key]: v[key].length > 1 ? v[key].filter((_, i) => i !== index) : v[key] })); const pages = Math.max(1, Math.ceil(total / pageSize)); const selectable = records.filter((x) => x.status !== "redeemed"); const all = selectable.length > 0 && selectable.every((x) => selected.includes(x.id));
+  return <div className="admin-page points-admin-page"><AdminPageHeader eyebrow={"\u5546\u4e1a\u8fd0\u8425"} title={"\u79ef\u5206\u4e2d\u5fc3"} description={"\u751f\u6210\u5151\u6362\u7801\u3001\u914d\u7f6e\u521b\u5efa\u6b21\u6570\u4e0e\u7f6e\u9876\u5957\u9910\u3002"} /><AdminPanel className="points-generation-panel" title={"\u751f\u6210\u5151\u6362\u7801"}><form className="placement-form" onSubmit={saveCodes}><div className="placement-form-grid"><label className="admin-field"><span>{"\u751f\u6210\u6570\u91cf"}</span><input type="number" min="1" max="500" value={form.quantity} onChange={(e) => setForm({ ...form, quantity: e.target.value })} /></label><label className="admin-field"><span>{"\u6bcf\u7801\u79ef\u5206"}</span><input type="number" min="1" value={form.pointsPerCode} onChange={(e) => setForm({ ...form, pointsPerCode: e.target.value })} /></label><label className="admin-field"><span>{"\u5907\u6ce8"}</span><input value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} /></label></div><button className="admin-primary-button" type="submit">{"\u751f\u6210\u5151\u6362\u7801"}</button></form>{codes && <textarea className="admin-code-output" value={codes} readOnly rows={8} />}</AdminPanel><AdminPanel className="points-records-panel" title={"\u5151\u6362\u7801\u8bb0\u5f55"}><div className="points-records-toolbar"><label className="points-search-field"><Search size={16} /><input aria-label={"\u641c\u7d22\u5151\u6362\u7801\u6216\u7528\u6237\u90ae\u7bb1"} placeholder={"\u641c\u7d22\u5151\u6362\u7801\u6216\u7528\u6237\u90ae\u7bb1"} value={search} onChange={(e) => { setSearch(e.target.value); setPage(1); }} /></label><select value={status} onChange={(e) => { setStatus(e.target.value); setPage(1); }}><option value="">{"\u5168\u90e8\u72b6\u6001"}</option><option value="unused">{"\u672a\u4f7f\u7528"}</option><option value="redeemed">{"\u5df2\u4f7f\u7528"}</option><option value="revoked">{"\u5df2\u64a4\u9500"}</option></select><button className="admin-secondary-button" type="button" disabled={!selected.length} onClick={async () => { if (!window.confirm("\u786e\u8ba4\u5220\u9664\u9009\u4e2d\u7684\u5151\u6362\u7801\u5417\uff1f")) return; await adminApiRequest("/api/admin/points/codes", { method: "DELETE", body: JSON.stringify({ ids: selected }) }); reload(); }}>{"\u5220\u9664\u9009\u4e2d"} ({selected.length})</button></div><div className="admin-table-wrap"><table className="admin-table"><thead><tr><th><input type="checkbox" checked={all} onChange={(e) => setSelected(e.target.checked ? selectable.map((x) => x.id) : [])} /></th><th>{"\u5151\u6362\u7801"}</th><th>{"\u79ef\u5206"}</th><th>{"\u72b6\u6001"}</th><th>{"\u5151\u6362\u7528\u6237"}</th><th>{"\u5151\u6362\u65f6\u95f4"}</th></tr></thead><tbody>{records.map((x) => <tr key={x.id}><td><input type="checkbox" disabled={x.status === "redeemed"} checked={selected.includes(x.id)} onChange={(e) => setSelected((v) => e.target.checked ? [...v, x.id] : v.filter((id) => id !== x.id))} /></td><td><span className="admin-code-chip">{x.code_mask}</span></td><td>{x.points}</td><td>{x.status === "redeemed" ? "\u5df2\u4f7f\u7528" : x.status === "revoked" ? "\u5df2\u64a4\u9500" : "\u672a\u4f7f\u7528"}</td><td>{x.redeemed_email || "-"}</td><td>{x.redeemed_at ? formatAdminDate(x.redeemed_at) : "-"}</td></tr>)}</tbody></table></div><div className="admin-pagination"><button className="admin-secondary-button" disabled={page <= 1} onClick={() => setPage(page - 1)}>{"\u4e0a\u4e00\u9875"}</button><span>{"\u7b2c"} {page} / {pages} {"\u9875\uff0c\u5171"} {total} {"\u6761"}</span><button className="admin-secondary-button" disabled={page >= pages} onClick={() => setPage(page + 1)}>{"\u4e0b\u4e00\u9875"}</button></div></AdminPanel><AdminPanel className="points-settings-panel" title={"\u79ef\u5206\u8bbe\u7f6e"}><div className="points-settings-link"><label className="admin-field"><span>{"\u83b7\u53d6\u5151\u6362\u7801\u94fe\u63a5"}</span><input value={settings.redemptionUrl || ""} placeholder={"\u7559\u7a7a\u5219\u4e0d\u663e\u793a\u6309\u94ae"} onChange={(e) => setSettings({ ...settings, redemptionUrl: e.target.value })} /></label></div><label className="admin-toggle-row"><span><strong>{"\u7981\u6b62\u540c\u5546\u6237\u91cd\u590d\u4f18\u60e0\u7801"}</strong><small>{"\u5f00\u542f\u540e\uff0c\u540c\u4e00\u5546\u6237\u4e0d\u80fd\u91cd\u590d\u63d0\u4ea4 code\u3002"}</small></span><Switch checked={settings.creationRule?.preventDuplicateMerchantCodes !== false} label={"\u7981\u6b62\u540c\u5546\u6237\u91cd\u590d\u4f18\u60e0\u7801"} onChange={(value) => setSettings({ ...settings, creationRule: { ...settings.creationRule, preventDuplicateMerchantCodes: value } })} /></label><div className="points-package-list"><h3>{"\u7f6e\u9876\u5957\u9910"}</h3>{(settings.packages || []).map((x, i) => <div className="points-package-row" key={x.id}><label className="admin-field"><span>{"\u7f6e\u9876\u5929\u6570"}</span><input type="number" min="1" value={x.days} onChange={(e) => update("packages", i, "days", e.target.value)} /></label><label className="admin-field"><span>{"\u79ef\u5206"}</span><input type="number" min="1" value={x.points} onChange={(e) => update("packages", i, "points", e.target.value)} /></label><button className="admin-secondary-button points-package-remove" type="button" disabled={(settings.packages || []).length <= 1} onClick={() => removePackage("packages", i)}>{"\u5220\u9664\u5957\u9910"}</button></div>)}<button className="admin-secondary-button" type="button" onClick={() => setSettings({ ...settings, packages: [...(settings.packages || []), { id: `points-${Date.now()}`, days: 1, points: 10, enabled: true }] })}>{"\u65b0\u589e\u7f6e\u9876\u5957\u9910"}</button></div><div className="points-package-list"><h3>{"\u521b\u5efa\u6b21\u6570\u5957\u9910"}</h3>{(settings.creationPackages || []).map((x, i) => <div className="points-package-row" key={x.id}><label className="admin-field"><span>{"\u5957\u9910\u540d\u79f0"}</span><input value={x.name} onChange={(e) => update("creationPackages", i, "name", e.target.value)} /></label><label className="admin-field"><span>{"\u521b\u5efa\u6b21\u6570"}</span><input type="number" min="1" value={x.quota} onChange={(e) => update("creationPackages", i, "quota", e.target.value)} /></label><label className="admin-field"><span>{"\u79ef\u5206"}</span><input type="number" min="1" value={x.points} onChange={(e) => update("creationPackages", i, "points", e.target.value)} /></label><button className="admin-secondary-button points-package-remove" type="button" disabled={(settings.creationPackages || []).length <= 1} onClick={() => removePackage("creationPackages", i)}>{"\u5220\u9664\u5957\u9910"}</button></div>)}<button className="admin-secondary-button" type="button" onClick={() => setSettings({ ...settings, creationPackages: [...(settings.creationPackages || []), { id: `creation-${Date.now()}`, name: "\u65b0\u5957\u9910", quota: 1, points: 10, enabled: true }] })}>{"\u65b0\u589e\u521b\u5efa\u6b21\u6570\u5957\u9910"}</button></div><button className="admin-primary-button" type="button" onClick={saveSettings}>{"\u4fdd\u5b58\u8bbe\u7f6e"}</button></AdminPanel><AdminPlacements refreshKey={refreshKey} showToast={showToast} /></div>;
 }
 
 function AdminPlacements({ refreshKey, showToast }) {
@@ -4327,7 +4377,7 @@ function AdminUserOAuthSettings({ showToast }) {
     );
   };
 
-  if (loading) return <div className="admin-page"><AdminPageHeader title="第三方登录" /><AdminPanel title="登录配置"><div className="admin-empty-state">正在加载配置...</div></AdminPanel></div>;
+  if (loading) return <div className="admin-page"><AdminPageHeader title="第三方登录" /></div>;
 
   return <div className="admin-page">
     <AdminPageHeader eyebrow="用户访问" title="第三方登录" description="配置普通用户使用 Google 或自建身份平台登录。" />
@@ -4385,19 +4435,6 @@ function AdminSettings({ session, showToast }) {
 
     const nextSettings = {
       ...settings,
-      merchantDealTotalLimit: normalizeLimitValue(
-        settings.merchantDealTotalLimit,
-        DEFAULT_ADMIN_SETTINGS.merchantDealTotalLimit,
-      ),
-      merchantDealPublicLimit: normalizeLimitValue(
-        settings.merchantDealPublicLimit,
-        DEFAULT_ADMIN_SETTINGS.merchantDealPublicLimit,
-      ),
-      merchantDealDailyLimit: normalizeLimitValue(
-        settings.merchantDealDailyLimit,
-        DEFAULT_ADMIN_SETTINGS.merchantDealDailyLimit,
-      ),
-      preventDuplicateMerchantCodes: settings.preventDuplicateMerchantCodes !== false,
       showGithubLink: settings.showGithubLink !== false,
       githubUrl: GITHUB_REPOSITORY_URL,
     };
@@ -4452,7 +4489,7 @@ function AdminSettings({ session, showToast }) {
   if (loading) return <div className="admin-page"><AdminPageHeader title="系统设置" /><AdminPanel title="系统设置"><div className="admin-empty-state">正在加载配置...</div></AdminPanel></div>;
 
   return (
-    <div className="admin-page">
+    <div className="admin-page system-settings-page">
       <AdminPageHeader
         eyebrow="系统"
         title="系统设置"
@@ -4501,58 +4538,7 @@ function AdminSettings({ session, showToast }) {
             </label>
           </div>
         </AdminPanel>
-        <AdminPanel
-          title="创建优惠限制"
-          description="控制单个用户可保留和公开展示的优惠码数量。"
-        >
-          <div className="admin-setting-fields">
-            <label className="admin-field">
-              <span>累计优惠码上限</span>
-              <input
-                type="number"
-                min="0"
-                value={settings.merchantDealTotalLimit}
-                onChange={(event) =>
-                  updateLimitSetting("merchantDealTotalLimit", event.target.value)
-                }
-              />
-            </label>
-            <label className="admin-field">
-              <span>公开展示上限</span>
-              <input
-                type="number"
-                min="0"
-                value={settings.merchantDealPublicLimit}
-                onChange={(event) =>
-                  updateLimitSetting("merchantDealPublicLimit", event.target.value)
-                }
-              />
-            </label>
-            <label className="admin-field">
-              <span>每日新增上限</span>
-              <input
-                type="number"
-                min="0"
-                value={settings.merchantDealDailyLimit}
-                onChange={(event) =>
-                  updateLimitSetting("merchantDealDailyLimit", event.target.value)
-                }
-              />
-            </label>
-            <label className="admin-toggle-row admin-setting-inline-toggle">
-              <span>
-                <strong>禁止同商户重复优惠码</strong>
-                <small>同一商户下，相同 code 只能保留一条。</small>
-              </span>
-              <Switch
-                checked={settings.preventDuplicateMerchantCodes !== false}
-                label="禁止同商户重复优惠码"
-                disabled={saving}
-                onChange={(value) => toggleSetting("preventDuplicateMerchantCodes", value)}
-              />
-            </label>
-          </div>
-        </AdminPanel>
+
         <AdminPanel title="管理员密码">
           <div className="admin-setting-fields">
             <label className="admin-field">
@@ -4608,6 +4594,7 @@ function MerchantDashboard({ session, navigate, showToast }) {
     website: session.merchant?.website || "",
   });
   const [deals, setDeals] = useState([]);
+  const [quota, setQuota] = useState({ available: 0 });
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [editing, setEditing] = useState(null);
@@ -4615,8 +4602,9 @@ function MerchantDashboard({ session, navigate, showToast }) {
 
   const refresh = () => {
     setLoading(true);
-    return apiRequest("/api/user/deals")
-      .then((data) => {
+    return Promise.all([apiRequest("/api/user/deals"), apiRequest("/api/user/creation-quota")])
+      .then(([data, quotaData]) => {
+        setQuota(quotaData || { available: 0 });
         const merchant = data?.merchant;
         if (merchant) {
           setAccount(merchant);
@@ -4721,6 +4709,7 @@ function MerchantDashboard({ session, navigate, showToast }) {
       </section>
 
       <section className="merchant-workspace wrapper">
+        {!editing && <div className="form-hint">{ "\u521b\u5efa\u6b21\u6570" }{String.fromCodePoint(0xFF1A)}{quota.available || 0} { "\u6b21" }{String.fromCodePoint(0x3002)}{ "\u521b\u5efa\u5931\u8d25\u4e0d\u4f1a\u6263\u9664\u6b21\u6570" }{String.fromCodePoint(0x3002)}</div>}
         <div className="form-section">
           <div className="section-heading">
             <div>
@@ -4805,7 +4794,7 @@ function MerchantDashboard({ session, navigate, showToast }) {
               <span className="form-hint">
                 官网地址：{form.website || "请填写 HTTPS 官网地址"}
               </span>
-              <button className="primary-button" type="submit" disabled={submitting}>
+              <button className="primary-button" type="submit" disabled={submitting || (!editing && quota.available < 1)}>
                 {submitting ? "保存中..." : editing ? "保存修改" : "立即创建"}
                 <Plus size={16} />
               </button>

@@ -1,4 +1,4 @@
-import { createServer } from "node:http";
+﻿import { createServer } from "node:http";
 import { createHash, randomBytes, randomInt, scryptSync, timingSafeEqual } from "node:crypto";
 import nodemailer from "nodemailer";
 import { closeDatabase, initDatabase, query, withTransaction } from "./db.mjs";
@@ -45,6 +45,21 @@ const oauthStates = new Map();
 const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 const OAUTH_MAX_STATES = 5000;
 const OAUTH_REQUEST_TIMEOUT_MS = 10_000;
+const POINT_CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+const DEFAULT_POINTS_CONFIG = {
+  redemptionUrl: "",
+  creationRule: { preventDuplicateMerchantCodes: true },
+  creationPackages: [
+    { id: "starter", name: "\u5165\u95e8\u5305", quota: 1, points: 10, enabled: true },
+    { id: "standard", name: "\u6807\u51c6\u5305", quota: 5, points: 40, enabled: true },
+    { id: "bulk", name: "\u6279\u91cf\u5305", quota: 10, points: 70, enabled: true },
+  ],
+  packages: [
+    { id: "points-1d", days: 1, points: 10, enabled: true },
+    { id: "points-3d", days: 3, points: 25, enabled: true },
+    { id: "points-7d", days: 7, points: 50, enabled: true },
+  ],
+};
 
 function getUserOAuthProviderConfig(provider) {
   return {
@@ -167,6 +182,47 @@ function verifyPassword(password, row) {
 
 function hashToken(token) {
   return createHash("sha256").update(token).digest("hex");
+}
+
+function normalizePointsConfig(value = {}) {
+  const packages = Array.isArray(value.packages)
+    ? value.packages.map((item) => ({
+      id: String(item?.id || "").trim().slice(0, 40),
+      days: Number(item?.days),
+      points: Number(item?.points),
+      enabled: item?.enabled !== false,
+    })).filter((item) => item.id && Number.isInteger(item.days) && item.days > 0 && item.days <= 365 && Number.isInteger(item.points) && item.points > 0)
+    : DEFAULT_POINTS_CONFIG.packages;
+  return {
+    redemptionUrl: String(value.redemptionUrl || "").trim(),
+    creationRule: {
+      preventDuplicateMerchantCodes: value?.creationRule?.preventDuplicateMerchantCodes !== false,
+    },
+    creationPackages: Array.isArray(value.creationPackages) && value.creationPackages.length
+      ? value.creationPackages.map((item, index) => ({
+        id: String(item?.id || `creation-${index + 1}`).trim(),
+        name: String(item?.name || `\u521b\u5efa\u989d\u5ea6\u5305 ${index + 1}`).trim(),
+        quota: Number(item?.quota),
+        points: Number(item?.points),
+        enabled: item?.enabled !== false,
+      })).filter((item) => item.id && item.name && Number.isInteger(item.quota) && item.quota > 0 && Number.isInteger(item.points) && item.points > 0)
+      : DEFAULT_POINTS_CONFIG.creationPackages,
+    packages: packages.length ? packages : DEFAULT_POINTS_CONFIG.packages,
+  };
+}
+
+function pointCodeHash(code) {
+  return createHash("sha256").update(String(code).trim().toUpperCase()).digest("hex");
+}
+
+function makePointCode() {
+  const chunks = [];
+  for (let chunk = 0; chunk < 3; chunk += 1) {
+    let value = "";
+    for (let index = 0; index < 4; index += 1) value += POINT_CODE_CHARS[randomInt(POINT_CODE_CHARS.length)];
+    chunks.push(value);
+  }
+  return `LS-${chunks.join("-")}`;
 }
 
 function makeToken() {
@@ -394,6 +450,9 @@ function placementFromRow(row) {
     endsAt: dateOnly(row.ends_at),
     status: row.placement_status || row.status,
     note: row.note || "",
+    sourceType: row.source_type || "admin",
+    pointsSpent: Number(row.points_spent || 0),
+    durationDays: row.duration_days ? Number(row.duration_days) : null,
     createdBy: row.created_by_email || "",
     createdAt: toIso(row.placement_created_at || row.created_at),
     updatedAt: toIso(row.placement_updated_at || row.updated_at),
@@ -511,6 +570,42 @@ async function getMerchant(request) {
   const result = await query("SELECT * FROM merchants WHERE user_id = $1", [user.id]);
   if (result.rows[0]) return result.rows[0];
   return withTransaction((client) => getOrCreateUserMerchant(client, user, "", ""));
+}
+
+function creationQuotaBalance(row) {
+  if (!row) return 0;
+  return Math.max(0, Number(row.free_quota || 0) + Number(row.purchased_quota || 0) + Number(row.adjustment_quota || 0) - Number(row.consumed_quota || 0));
+}
+
+async function ensureCreationQuotaAccount(client, userId) {
+  const inserted = await client.query(
+    "INSERT INTO user_creation_quota_accounts (user_id) VALUES ($1) ON CONFLICT DO NOTHING RETURNING *",
+    [userId],
+  );
+  const account = inserted.rows[0] || (await client.query(
+    "SELECT * FROM user_creation_quota_accounts WHERE user_id = $1 FOR UPDATE",
+    [userId],
+  )).rows[0];
+  if (inserted.rowCount) {
+    await client.query(
+      "INSERT INTO creation_quota_ledger (user_id, entry_type, delta, balance_after, description) VALUES ($1, 'free_grant', 1, 1, $2)",
+      [userId, "\u65b0\u7528\u6237\u514d\u8d39\u521b\u5efa\u989d\u5ea6"],
+    );
+  }
+  return account;
+}
+
+async function ensureCreationQuotaPackage(client, selected) {
+  const inserted = await client.query(
+    "INSERT INTO creation_quota_packages (config_id, name, quota, points, enabled) VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING RETURNING id",
+    [selected.id, selected.name, selected.quota, selected.points, selected.enabled !== false],
+  );
+  if (inserted.rowCount) return inserted.rows[0].id;
+  const updated = await client.query(
+    "UPDATE creation_quota_packages SET name = $2, quota = $3, points = $4, enabled = $5, updated_at = now() WHERE config_id = $1 RETURNING id",
+    [selected.id, selected.name, selected.quota, selected.points, selected.enabled !== false],
+  );
+  return updated.rows[0]?.id || null;
 }
 
 async function getUser(request) {
@@ -928,7 +1023,7 @@ async function getPlacementRecord(id) {
   const result = await query(
     `SELECT pl.id AS placement_id, pl.promo_code_id, pl.placement_type,
             pl.priority, pl.sponsor_name, pl.starts_at, pl.ends_at,
-            pl.status AS placement_status, pl.note,
+            pl.status AS placement_status, pl.note, pl.source_type, pl.points_spent, pl.duration_days,
             pl.created_by, pl.created_at AS placement_created_at,
             pl.updated_at AS placement_updated_at,
             p.code, p.offer, m.store_name, m.website, m.email AS owner_email,
@@ -1052,9 +1147,9 @@ async function sendUserVerificationEmail(email, token, code) {
   const url = `${baseUrl}/user/verify?token=${encodeURIComponent(token)}`;
   await sendMail(
     email,
-    "验证你的 promo-code 用户账号",
-    `请使用验证码 ${code}，或打开以下链接完成邮箱验证：${url}`,
-    `<p>你的 promo-code 邮箱验证码是：</p><p><strong>${code}</strong></p><p><a href="${url}">点击完成邮箱验证</a></p>`,
+    "\u9a8c\u8bc1\u4f60\u7684 promo-code \u7528\u6237\u8d26\u53f7",
+    `\u8bf7\u4f7f\u7528\u9a8c\u8bc1\u7801 ${code}\uff0c\u6216\u6253\u5f00\u4ee5\u4e0b\u94fe\u63a5\u5b8c\u6210\u90ae\u7bb1\u9a8c\u8bc1\uff1a${url}`,
+    `<p>\u4f60\u7684 promo-code \u90ae\u7bb1\u9a8c\u8bc1\u7801\u662f\uff1a</p><p><strong>${code}</strong></p><p><a href="${url}">\u70b9\u51fb\u5b8c\u6210\u90ae\u7bb1\u9a8c\u8bc1</a></p>`,
   );
   return url;
 }
@@ -1066,9 +1161,9 @@ async function sendPasswordResetEmail(email, token) {
   const url = `${baseUrl}/user/reset-password?token=${encodeURIComponent(token)}`;
   await sendMail(
     email,
-    "重置你的 promo-code 密码",
-    `请打开以下链接重置密码：${url}`,
-    `<p>请点击以下链接重置你的 promo-code 密码：</p><p><a href="${url}">重置密码</a></p>`,
+    "\u91cd\u7f6e\u4f60\u7684 promo-code \u5bc6\u7801",
+    `\u8bf7\u6253\u5f00\u4ee5\u4e0b\u94fe\u63a5\u91cd\u7f6e\u5bc6\u7801\uff1a${url}`,
+    `<p>\u8bf7\u70b9\u51fb\u4ee5\u4e0b\u94fe\u63a5\u91cd\u7f6e promo-code \u5bc6\u7801\uff1a</p><p><a href="${url}">\u91cd\u7f6e\u5bc6\u7801</a></p>`,
   );
   return url;
 }
@@ -1259,16 +1354,8 @@ async function ensureDevelopmentAccounts() {
       await client.query(
         `INSERT INTO promo_codes
           (merchant_id, code, offer, deal_type, discount_value, terms, end_at, status, admin_status)
-         VALUES ($1, $2, $3, 'percentage', $4, $5, $6, 'published', 'normal')
-         ON CONFLICT (merchant_id, lower(code)) DO UPDATE
-           SET offer = EXCLUDED.offer,
-               deal_type = EXCLUDED.deal_type,
-               discount_value = EXCLUDED.discount_value,
-               terms = EXCLUDED.terms,
-               end_at = EXCLUDED.end_at,
-               status = 'published',
-               admin_status = 'normal',
-               admin_removal_reason = ''`,
+         SELECT $1, $2, $3, 'percentage', $4, $5, $6, 'published', 'normal'
+          WHERE NOT EXISTS (SELECT 1 FROM promo_codes WHERE merchant_id = $1 AND lower(code) = lower($2))`,
         [
           merchant.id,
           deal.code,
@@ -1411,6 +1498,7 @@ async function handleRequest(request, response) {
         mailEnabled: (await getMailSettings()).enabled,
         showGithubLink: await getSetting("showGithubLink", true),
         githubUrl: GITHUB_REPOSITORY_URL,
+        pointRedemptionUrl: normalizePointsConfig(await getSetting("pointsConfig", DEFAULT_POINTS_CONFIG)).redemptionUrl,
       },
       request,
     );
@@ -1973,6 +2061,52 @@ async function handleRequest(request, response) {
     return;
   }
 
+  if (path.startsWith("/api/user/creation-quota")) {
+    const user = await getUser(request);
+    if (!requirePrincipal(user, response, request, "请先登录")) return;
+    const pointsConfig = normalizePointsConfig(await getSetting("pointsConfig", DEFAULT_POINTS_CONFIG));
+    if (request.method === "GET" && path === "/api/user/creation-quota") {
+      const account = await withTransaction((client) => ensureCreationQuotaAccount(client, user.id));
+      sendJson(response, 200, {
+        available: creationQuotaBalance(account),
+        packages: pointsConfig.creationPackages.filter((item) => item.enabled),
+        preventDuplicateMerchantCodes: pointsConfig.creationRule.preventDuplicateMerchantCodes,
+      }, request);
+      return;
+    }
+    if (request.method === "GET" && path === "/api/user/creation-quota/ledger") {
+      const { page, limit, offset } = parsePagination(url, 20, 100);
+      const result = await query("SELECT l.*, p.code AS promo_code, cp.name AS package_name FROM creation_quota_ledger l LEFT JOIN promo_codes p ON p.id = l.promo_code_id LEFT JOIN creation_quota_packages cp ON cp.id = l.package_id WHERE l.user_id = $1 ORDER BY l.created_at DESC LIMIT $2 OFFSET $3", [user.id, limit, offset]);
+      const total = await query("SELECT COUNT(*)::int AS total FROM creation_quota_ledger WHERE user_id = $1", [user.id]);
+      sendJson(response, 200, { ledger: result.rows, page, limit, total: Number(total.rows[0]?.total || 0) }, request);
+      return;
+    }
+    if (request.method === "POST" && path === "/api/user/creation-quota/purchase") {
+      const body = await readBody(request);
+      const packageId = String(body.packageId || "");
+      const selected = pointsConfig.creationPackages.find((item) => item.enabled && item.id === packageId);
+      if (!selected) { sendError(response, 400, "\u521b\u5efa\u989d\u5ea6\u5957\u9910\u4e0d\u53ef\u7528", request); return; }
+      try {
+        const result = await withTransaction(async (client) => {
+          const account = await ensureCreationQuotaAccount(client, user.id);
+          await client.query("INSERT INTO user_point_accounts (user_id) VALUES ($1) ON CONFLICT DO NOTHING", [user.id]);
+          const pointAccount = (await client.query("SELECT balance FROM user_point_accounts WHERE user_id = $1 FOR UPDATE", [user.id])).rows[0];
+          if (Number(pointAccount.balance) < selected.points) throw httpError(400, "积分余额不足");
+          const balance = Number(pointAccount.balance) - selected.points;
+          await client.query("UPDATE user_point_accounts SET balance = $1, updated_at = now() WHERE user_id = $2", [balance, user.id]);
+          await client.query("UPDATE user_creation_quota_accounts SET purchased_quota = purchased_quota + $1, updated_at = now() WHERE user_id = $2", [selected.quota, user.id]);
+          const nextQuota = creationQuotaBalance({ ...account, purchased_quota: Number(account.purchased_quota) + selected.quota });
+          await client.query("INSERT INTO point_ledger (user_id, entry_type, delta, balance_after, description) VALUES ($1, 'adjustment', $2, $3, $4)", [user.id, -selected.points, balance, `\u8d2d\u4e70\u521b\u5efa\u6b21\u6570 ${selected.quota} \u6b21`]);
+          const packageRowId = await ensureCreationQuotaPackage(client, selected);
+          await client.query("INSERT INTO creation_quota_ledger (user_id, entry_type, delta, balance_after, package_id, description) VALUES ($1, 'purchase', $2, $3, $4, $5)", [user.id, selected.quota, nextQuota, packageRowId, `\u8d2d\u4e70 ${selected.name}`]);
+          return { available: nextQuota, balance, quota: selected.quota, points: selected.points };
+        });
+        sendJson(response, 201, result, request);
+      } catch (error) { if (error.status) sendError(response, error.status, error.message, request); else throw error; }
+      return;
+    }
+  }
+
   if (
     request.method === "POST" &&
     path === "/api/user/deals"
@@ -2028,46 +2162,17 @@ async function handleRequest(request, response) {
       sendError(response, 403, "该官网地址命中了网站过滤规则", request);
       return;
     }
-    const totalLimit = Number(await getSetting("merchantDealTotalLimit", 50));
-    const dailyLimit = Number(await getSetting("merchantDealDailyLimit", 5));
-    const publicLimit = Number(await getSetting("merchantDealPublicLimit", 10));
+    const pointsConfig = normalizePointsConfig(await getSetting("pointsConfig", DEFAULT_POINTS_CONFIG));
     try {
       const result = await withTransaction(async (client) => {
-        const lockedMerchant = await client.query(
-          "SELECT * FROM merchants WHERE id = $1 FOR UPDATE",
-          [merchant.id],
-        );
+        const lockedMerchant = await client.query("SELECT * FROM merchants WHERE id = $1 FOR UPDATE", [merchant.id]);
         if (!lockedMerchant.rowCount) throw httpError(404, "发布者资料不存在");
-        if (
-          lockedMerchant.rows[0].status !== "active" ||
-          lockedMerchant.rows[0].admin_status === "suspended"
-        ) {
-          throw httpError(403, "当前账号不可创建优惠码");
-        }
-        const counts = await client.query(
-          `SELECT
-             COUNT(*)::int AS total_count,
-             COUNT(*) FILTER (
-               WHERE (created_at AT TIME ZONE '${BUSINESS_TIME_ZONE}')::date >= ${BUSINESS_DATE_SQL}
-             )::int AS daily_count,
-             COUNT(*) FILTER (
-               WHERE status = 'published'
-                 AND admin_status <> 'removed'
-                 AND (end_at IS NULL OR end_at >= ${BUSINESS_DATE_SQL})
-             )::int AS public_count
-           FROM promo_codes
-          WHERE merchant_id = $1`,
-          [merchant.id],
-        );
-        const count = counts.rows[0];
-        if (Number.isFinite(totalLimit) && Number(count.total_count) >= totalLimit) {
-          throw httpError(409, `单个发布者最多保留 ${totalLimit} 条优惠码`);
-        }
-        if (Number.isFinite(dailyLimit) && Number(count.daily_count) >= dailyLimit) {
-          throw httpError(409, `单个发布者每日最多新增 ${dailyLimit} 条优惠码`);
-        }
-        if (Number.isFinite(publicLimit) && Number(count.public_count) >= publicLimit) {
-          throw httpError(409, `单个发布者最多同时公开展示 ${publicLimit} 条优惠码`);
+        if (lockedMerchant.rows[0].status !== "active" || lockedMerchant.rows[0].admin_status === "suspended") throw httpError(403, "\u5f53\u524d\u8d26\u53f7\u4e0d\u53ef\u521b\u5efa\u4f18\u60e0\u7801");
+        const quota = await ensureCreationQuotaAccount(client, merchant.user_id);
+        if (creationQuotaBalance(quota) < 1) throw httpError(409, "\u521b\u5efa\u6b21\u6570\u5df2\u7528\u5b8c\uff0c\u8bf7\u524d\u5f80\u79ef\u5206\u4e2d\u5fc3\u8d2d\u4e70");
+        if (pointsConfig.creationRule.preventDuplicateMerchantCodes) {
+          const duplicate = await client.query("SELECT id FROM promo_codes WHERE merchant_id = $1 AND lower(code) = lower($2) LIMIT 1", [merchant.id, code]);
+          if (duplicate.rowCount) throw httpError(409, "\u540c\u4e00\u5546\u6237\u4e0d\u80fd\u91cd\u590d\u63d0\u4ea4\u76f8\u540c\u4f18\u60e0\u7801");
         }
         const merchantResult = await client.query(
           "UPDATE merchants SET store_name = $1, website = $2 WHERE id = $3 RETURNING *",
@@ -2080,7 +2185,10 @@ async function handleRequest(request, response) {
            RETURNING *`,
           [merchant.id, code, offer, dealType, discountValue, terms, endAt],
         );
-        return { merchant: merchantResult.rows[0], deal: dealResult.rows[0] };
+        const nextQuota = creationQuotaBalance({ ...quota, consumed_quota: Number(quota.consumed_quota) + 1 });
+        await client.query("UPDATE user_creation_quota_accounts SET consumed_quota = consumed_quota + 1, updated_at = now() WHERE user_id = $1", [merchant.user_id]);
+        await client.query("INSERT INTO creation_quota_ledger (user_id, entry_type, delta, balance_after, promo_code_id, description) VALUES ($1, 'consume', -1, $2, $3, $4)", [merchant.user_id, nextQuota, dealResult.rows[0].id, "\u521b\u5efa\u4f18\u60e0\u7801\uff0c\u6d88\u8017 1 \u6b21"]);
+        return { merchant: merchantResult.rows[0], deal: dealResult.rows[0], availableQuota: nextQuota };
       });
       sendJson(
         response,
@@ -2093,6 +2201,7 @@ async function handleRequest(request, response) {
             website,
             owner_email: merchant.email,
           }),
+          availableQuota: result.availableQuota,
         },
         request,
       );
@@ -2210,7 +2319,6 @@ async function handleRequest(request, response) {
       sendError(response, 400, "优惠码 ID 格式不正确", request);
       return;
     }
-    const publicLimit = Number(await getSetting("merchantDealPublicLimit", 10));
     const result = await withTransaction(async (client) => {
       const lockedMerchant = await client.query(
         "SELECT * FROM merchants WHERE id = $1 FOR UPDATE",
@@ -2228,20 +2336,6 @@ async function handleRequest(request, response) {
         [merchantToggleMatch[1], merchant.id],
       );
       if (!current.rowCount) throw httpError(404, "优惠码不存在");
-      if (current.rows[0].status === "paused") {
-        const count = await client.query(
-          `SELECT COUNT(*)::int AS public_count
-             FROM promo_codes
-            WHERE merchant_id = $1
-              AND status = 'published'
-              AND admin_status <> 'removed'
-              AND (end_at IS NULL OR end_at >= ${BUSINESS_DATE_SQL})`,
-          [merchant.id],
-        );
-        if (Number.isFinite(publicLimit) && Number(count.rows[0].public_count) >= publicLimit) {
-          throw httpError(409, `单个发布者最多同时公开展示 ${publicLimit} 条优惠码`);
-        }
-      }
       const updated = await client.query(
         `UPDATE promo_codes
             SET status = CASE WHEN status = 'paused' THEN 'published' ELSE 'paused' END,
@@ -2363,6 +2457,127 @@ async function handleRequest(request, response) {
       else throw error;
     }
     return;
+  }
+
+  if (path.startsWith("/api/user/points")) {
+    const user = await getUser(request);
+    if (!requirePrincipal(user, response, request, "请先登录用户账号")) return;
+    const config = normalizePointsConfig(await getSetting("pointsConfig", DEFAULT_POINTS_CONFIG));
+    if (request.method === "GET" && path === "/api/user/points") {
+      const account = await query("SELECT balance FROM user_point_accounts WHERE user_id = $1", [user.id]);
+      const merchant = await getMerchant(request);
+      let deals = [];
+      if (merchant) {
+        const result = await query(
+          `SELECT p.id, p.code, p.offer, p.end_at, p.status, p.admin_status, m.store_name
+             FROM promo_codes p JOIN merchants m ON m.id = p.merchant_id
+            WHERE p.merchant_id = $1 AND p.status = 'published' AND p.admin_status <> 'removed'
+              AND (p.end_at IS NULL OR p.end_at >= ${BUSINESS_DATE_SQL})
+            ORDER BY p.created_at DESC`,
+          [merchant.id],
+        );
+        deals = result.rows.map((row) => ({ id: row.id, code: row.code, offer: row.offer, endAt: dateOnly(row.end_at), storeName: row.store_name }));
+      }
+      sendJson(response, 200, {
+        balance: Number(account.rows[0]?.balance || 0),
+        creationQuota: await (async () => {
+          const quota = await withTransaction((client) => ensureCreationQuotaAccount(client, user.id));
+          return { available: creationQuotaBalance(quota), packages: config.creationPackages.filter((item) => item.enabled), preventDuplicateMerchantCodes: config.creationRule.preventDuplicateMerchantCodes };
+        })(),
+        packages: config.packages.filter((item) => item.enabled),
+        redemptionUrl: config.redemptionUrl,
+        deals,
+      }, request);
+      return;
+    }
+    if (request.method === "GET" && path === "/api/user/points/ledger") {
+      const { page, limit, offset } = parsePagination(url, 20, 100);
+      const result = await query(
+        `SELECT l.*, p.code AS placement_code
+           FROM point_ledger l LEFT JOIN promo_code_placements pl ON pl.id = l.placement_id LEFT JOIN promo_codes p ON p.id = pl.promo_code_id
+          WHERE l.user_id = $1 ORDER BY l.created_at DESC LIMIT $2 OFFSET $3`,
+        [user.id, limit, offset],
+      );
+      const total = await query("SELECT COUNT(*)::int AS total FROM point_ledger WHERE user_id = $1", [user.id]);
+      sendJson(response, 200, { ledger: result.rows, page, limit, total: Number(total.rows[0]?.total || 0) }, request);
+      return;
+    }
+    if (request.method === "GET" && path === "/api/user/points/placements") {
+      const result = await query(
+        `SELECT pl.id, pl.promo_code_id, pl.starts_at, pl.ends_at, pl.status, pl.points_spent, pl.duration_days, p.code, p.offer, m.store_name
+           FROM promo_code_placements pl JOIN promo_codes p ON p.id = pl.promo_code_id JOIN merchants m ON m.id = p.merchant_id
+          WHERE pl.source_type = 'user_points' AND p.merchant_id = (SELECT id FROM merchants WHERE user_id = $1)
+          ORDER BY pl.created_at DESC`,
+        [user.id],
+      );
+      sendJson(response, 200, { placements: result.rows.map((row) => ({ ...row, startsAt: dateOnly(row.starts_at), endsAt: dateOnly(row.ends_at) })) }, request);
+      return;
+    }
+    if (request.method === "POST" && path === "/api/user/points/redeem") {
+      const retryAfter = consumeAuthIpLimit(request, "point-redemption", 10);
+      if (retryAfter) {
+        sendRateLimitError(response, retryAfter, "兑换尝试过于频繁，请稍后再试", request);
+        return;
+      }
+      const body = await readBody(request);
+      const code = String(body.code || "").trim().toUpperCase();
+      if (!/^LS-[A-Z0-9]{4}(?:-[A-Z0-9]{4}){2}$/.test(code)) {
+        sendError(response, 400, "\u5151\u6362\u7801\u65e0\u6548\u6216\u5df2\u4f7f\u7528", request);
+        return;
+      }
+      const result = await withTransaction(async (client) => {
+        const codeResult = await client.query("SELECT * FROM point_redemption_codes WHERE code_hash = $1 FOR UPDATE", [pointCodeHash(code)]);
+        const item = codeResult.rows[0];
+        if (!item || item.status !== "unused" || (item.expires_at && new Date(item.expires_at) < new Date())) throw httpError(400, "\u5151\u6362\u7801\u65e0\u6548\u6216\u5df2\u4f7f\u7528");
+        await client.query("INSERT INTO user_point_accounts (user_id) VALUES ($1) ON CONFLICT DO NOTHING", [user.id]);
+        const account = await client.query("SELECT balance FROM user_point_accounts WHERE user_id = $1 FOR UPDATE", [user.id]);
+        const balance = Number(account.rows[0].balance) + Number(item.points);
+        await client.query("UPDATE user_point_accounts SET balance = $1, updated_at = now() WHERE user_id = $2", [balance, user.id]);
+        await client.query("UPDATE point_redemption_codes SET status = 'redeemed', redeemed_by = $1, redeemed_at = now() WHERE id = $2", [user.id, item.id]);
+        await client.query("INSERT INTO point_ledger (user_id, entry_type, delta, balance_after, redemption_code_id, description) VALUES ($1, 'redemption', $2, $3, $4, $5)", [user.id, item.points, balance, item.id, "\u5151\u6362\u7801\u5165\u8d26"]);
+        return { points: Number(item.points), balance };
+      });
+      sendJson(response, 200, result, request);
+      return;
+    }
+    if (request.method === "POST" && path === "/api/user/points/placements") {
+      const body = await readBody(request);
+      const dealId = String(body.promoCodeId || "");
+      const packageId = String(body.packageId || "");
+      if (!isUuid(dealId)) { sendError(response, 400, "优惠码不存在", request); return; }
+      const selected = config.packages.find((item) => item.enabled && item.id === packageId);
+      if (!selected) { sendError(response, 400, "\u7f6e\u9876\u5957\u9910\u4e0d\u53ef\u7528", request); return; }
+      const result = await withTransaction(async (client) => {
+        const dealResult = await client.query(
+          `SELECT p.*, m.user_id, m.store_name FROM promo_codes p JOIN merchants m ON m.id = p.merchant_id WHERE p.id = $1 FOR UPDATE`,
+          [dealId],
+        );
+        const deal = dealResult.rows[0];
+        if (!deal || deal.user_id !== user.id || deal.status !== "published" || deal.admin_status === "removed" || (deal.end_at && dateOnly(deal.end_at) < getBusinessDate())) throw httpError(400, "\u4f18\u60e0\u7801\u4e0d\u53ef\u7f6e\u9876");
+        if (deal.end_at && selected.days > Math.max(1, Math.floor((new Date(`${dateOnly(deal.end_at)}T00:00:00Z`) - new Date(`${getBusinessDate()}T00:00:00Z`)) / 86400000) + 1)) throw httpError(400, "置顶时长不能超过优惠码有效期");
+        await lockPlacementMerchant(client, dealId);
+        await client.query("INSERT INTO user_point_accounts (user_id) VALUES ($1) ON CONFLICT DO NOTHING", [user.id]);
+        const account = await client.query("SELECT balance FROM user_point_accounts WHERE user_id = $1 FOR UPDATE", [user.id]);
+        const currentBalance = Number(account.rows[0].balance);
+        if (currentBalance < selected.points) throw httpError(400, "积分余额不足");
+        const start = getBusinessDate();
+        const end = new Date(`${start}T00:00:00Z`); end.setUTCDate(end.getUTCDate() + selected.days - 1);
+        const endDate = end.toISOString().slice(0, 10);
+        await ensureSponsoredPlacementAvailable(client, dealId, {
+          placementType: "sponsored",
+          status: "active",
+          startsAt: start,
+          endsAt: endDate,
+        });
+        const placement = await client.query(`INSERT INTO promo_code_placements (promo_code_id, placement_type, priority, sponsor_name, starts_at, ends_at, status, note, source_type, points_spent, duration_days) VALUES ($1, 'sponsored', 100, $2, $3, $4, 'active', '用户积分置顶', 'user_points', $5, $6) RETURNING id`, [dealId, deal.store_name, start, endDate, selected.points, selected.days]);
+        const balance = currentBalance - selected.points;
+        await client.query("UPDATE user_point_accounts SET balance = $1, updated_at = now() WHERE user_id = $2", [balance, user.id]);
+        await client.query(`INSERT INTO point_ledger (user_id, entry_type, delta, balance_after, placement_id, description) VALUES ($1, 'placement_purchase', $2, $3, $4, $5)`, [user.id, -selected.points, balance, placement.rows[0].id, `\u7f6e\u9876 ${selected.days} \u5929`]);
+        return { placementId: placement.rows[0].id, balance, pointsSpent: selected.points, startsAt: start, endsAt: endDate };
+      });
+      sendJson(response, 201, result, request);
+      return;
+    }
   }
 
   if (request.method === "GET" && path === "/api/auth/user/oauth/providers") {
@@ -2520,6 +2735,70 @@ async function handleRequest(request, response) {
     return;
   }
 
+  if (path.startsWith("/api/admin/points") || path === "/api/admin/creation-quota/ledger") {
+    if (request.method === "GET" && path === "/api/admin/points/settings") {
+      sendJson(response, 200, { settings: normalizePointsConfig(await getSetting("pointsConfig", DEFAULT_POINTS_CONFIG)) }, request);
+      return;
+    }
+    if (request.method === "PUT" && path === "/api/admin/points/settings") {
+      const body = await readBody(request);
+      const current = normalizePointsConfig(await getSetting("pointsConfig", DEFAULT_POINTS_CONFIG));
+      const redemptionUrl = String(body.redemptionUrl || "").trim();
+      const packages = Array.isArray(body.packages) ? body.packages.map((item, index) => ({
+        id: String(item?.id || `points-${index + 1}`).trim(), days: Number(item?.days), points: Number(item?.points), enabled: item?.enabled !== false,
+      })) : current.packages;
+      const creationPackages = Array.isArray(body.creationPackages) ? body.creationPackages.map((item, index) => ({
+        id: String(item?.id || `creation-${index + 1}`).trim(), name: String(item?.name || `\u65b0\u5957\u9910 ${index + 1}`).trim(), quota: Number(item?.quota), points: Number(item?.points), enabled: item?.enabled !== false,
+      })) : current.creationPackages;
+      const settings = {
+        redemptionUrl,
+        creationRule: { preventDuplicateMerchantCodes: body?.creationRule?.preventDuplicateMerchantCodes !== false },
+        creationPackages,
+        packages,
+      };
+      await setSetting("pointsConfig", settings);
+      sendJson(response, 200, { settings }, request);
+      return;
+    }
+    if (request.method === "POST" && path === "/api/admin/points/code-batches") {
+      const body = await readBody(request); const quantity = Number(body.quantity); const points = Number(body.pointsPerCode); const note = String(body.note || "").trim(); const expiresAt = body.expiresAt ? new Date(body.expiresAt) : null;
+      if (!Number.isInteger(quantity) || quantity < 1 || quantity > 500 || !Number.isInteger(points) || points < 1 || note.length > 500 || (expiresAt && (!Number.isFinite(expiresAt.getTime()) || expiresAt <= new Date()))) throw httpError(400, "兑换码批次参数不正确");
+      const codes = Array.from({ length: quantity }, makePointCode); const batch = await withTransaction(async (client) => { const result = await client.query("INSERT INTO point_code_batches (created_by, quantity, points_per_code, expires_at, note) VALUES ($1, $2, $3, $4, $5) RETURNING id", [admin.id, quantity, points, expiresAt, note]); for (const code of codes) await client.query("INSERT INTO point_redemption_codes (batch_id, code_hash, code_mask, points, expires_at) VALUES ($1, $2, $3, $4, $5)", [result.rows[0].id, pointCodeHash(code), `LS-****-****-${code.slice(-4)}`, points, expiresAt]); return result.rows[0].id; });
+      await addAuditLog(admin, "create_point_codes", "point_code_batch", batch, `生成 ${quantity} 个兑换码`); sendJson(response, 201, { batchId: batch, codes }, request); return;
+    }
+    if (request.method === "GET" && path === "/api/admin/points/code-batches") {
+      const { limit, offset, page } = parsePagination(url, 10, 100);
+      const status = String(url.searchParams.get("status") || "").trim();
+      const search = String(url.searchParams.get("q") || "").trim().toLowerCase();
+      const params = [];
+      const conditions = [];
+      if (["unused", "redeemed", "revoked"].includes(status)) { params.push(status); conditions.push(`c.status = $${params.length}`); }
+      if (search) { params.push(`%${search}%`); conditions.push(`(lower(c.code_mask) LIKE $${params.length} OR lower(u.email) LIKE $${params.length})`); }
+      const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+      params.push(limit, offset);
+      const result = await query(`SELECT c.id, c.batch_id, c.code_mask, c.points, c.status, c.expires_at, c.redeemed_at, c.created_at, u.email AS redeemed_email, b.note FROM point_redemption_codes c JOIN point_code_batches b ON b.id = c.batch_id LEFT JOIN users u ON u.id = c.redeemed_by ${where} ORDER BY c.created_at DESC LIMIT $${params.length - 1} OFFSET $${params.length}`, params);
+      const count = await query(`SELECT COUNT(*)::int AS total FROM point_redemption_codes c LEFT JOIN users u ON u.id = c.redeemed_by ${where}`, params.slice(0, -2));
+      sendJson(response, 200, { codes: result.rows, page, limit, total: Number(count.rows[0]?.total || 0) }, request); return;
+    }
+    if (request.method === "DELETE" && path === "/api/admin/points/codes") {
+      const body = await readBody(request);
+      const ids = Array.isArray(body.ids) ? body.ids.filter(isUuid).slice(0, 100) : [];
+      if (!ids.length) throw httpError(400, "\u8bf7\u9009\u62e9\u8981\u5220\u9664\u7684\u5151\u6362\u7801");
+      const result = await query("DELETE FROM point_redemption_codes WHERE id = ANY($1::uuid[]) AND status IN ('unused', 'revoked') RETURNING id", [ids]);
+      sendJson(response, 200, { deleted: result.rowCount }, request); return;
+    }
+    const revokeMatch = path.match(/^\/api\/admin\/points\/codes\/([^/]+)\/revoke$/); if (request.method === "POST" && revokeMatch) { if (!isUuid(revokeMatch[1])) throw httpError(400, "兑换码 ID 不正确"); const result = await query("UPDATE point_redemption_codes SET status = 'revoked' WHERE id = $1 AND status = 'unused' RETURNING id", [revokeMatch[1]]); if (!result.rowCount) throw httpError(409, "兑换码不可撤销"); await addAuditLog(admin, "revoke_point_code", "point_code", revokeMatch[1], "撤销未兑换码"); sendJson(response, 200, { ok: true }, request); return; }
+    if (request.method === "GET" && path === "/api/admin/points/ledger") { const { limit, offset, page } = parsePagination(url, 50, 100); const result = await query("SELECT l.*, u.email FROM point_ledger l JOIN users u ON u.id = l.user_id ORDER BY l.created_at DESC LIMIT $1 OFFSET $2", [limit, offset]); const count = await query("SELECT COUNT(*)::int AS total FROM point_ledger"); sendJson(response, 200, { ledger: result.rows, page, limit, total: Number(count.rows[0]?.total || 0) }, request); return; }
+    if (request.method === "GET" && path === "/api/admin/creation-quota/ledger") {
+      const { limit, offset, page } = parsePagination(url, 20, 100);
+      const result = await query("SELECT l.*, u.email, p.code AS promo_code FROM creation_quota_ledger l JOIN users u ON u.id = l.user_id LEFT JOIN promo_codes p ON p.id = l.promo_code_id ORDER BY l.created_at DESC LIMIT $1 OFFSET $2", [limit, offset]);
+      const count = await query("SELECT COUNT(*)::int AS total FROM creation_quota_ledger");
+      sendJson(response, 200, { ledger: result.rows, page, limit, total: Number(count.rows[0]?.total || 0) }, request);
+      return;
+    }
+
+  }
+
   const isAdminAnnouncementPath =
     path === "/api/admin/announcement" || path === "/api/admin/announcements";
 
@@ -2572,7 +2851,7 @@ async function handleRequest(request, response) {
     const result = await query(
       `SELECT pl.id AS placement_id, pl.promo_code_id, pl.placement_type,
               pl.priority, pl.sponsor_name, pl.starts_at, pl.ends_at,
-              pl.status AS placement_status, pl.note,
+              pl.status AS placement_status, pl.note, pl.source_type, pl.points_spent, pl.duration_days,
               pl.created_by, pl.created_at AS placement_created_at,
               pl.updated_at AS placement_updated_at,
               p.code, p.offer, m.store_name, m.website, m.email AS owner_email,
@@ -3101,7 +3380,7 @@ async function handleRequest(request, response) {
         redirectUri: String(input.redirectUri || "").trim(),
       };
       if (next.enabled && (!next.issuer || !next.clientId || !next.clientSecret || !next.redirectUri)) {
-        sendError(response, 400, `${provider === "google" ? "Google" : "自建身份平台"} 配置未填写完整`, request);
+        sendError(response, 400, "OAuth 配置不完整，请填写 issuer、clientId、clientSecret 和 redirectUri", request);
         return;
       }
       await setSetting(`userOAuth.${provider}`, next);
@@ -3131,7 +3410,7 @@ async function handleRequest(request, response) {
       if (body[key] !== undefined) {
         const value = Number(body[key]);
         if (!Number.isInteger(value) || value < 0) {
-          sendError(response, 400, `${key} 必须是非负整数`, request);
+          sendError(response, 400, "数量限制必须是大于等于 0 的整数", request);
           return;
         }
         await setSetting(key, value);
@@ -3205,7 +3484,7 @@ const server = createServer((request, response) => {
   handleRequest(request, response).catch((error) => {
     console.error(error);
     const status = Number(error.statusCode || 500);
-    const message = status >= 500 ? "服务器内部错误" : error.message || "请求处理失败";
+    const message = status < 500 && error?.message ? error.message : "服务器内部错误";
     if (!response.headersSent) sendError(response, status, message, request);
     else response.end();
   });
