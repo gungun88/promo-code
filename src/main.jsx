@@ -819,6 +819,14 @@ function SiteHeader({ path, navigate, userSession, onUserLogout }) {
           <img className="brand-logo" src={logoLight} alt="promo-code" />
         </button>
         <div className="nav-links">
+          <a
+            className="nav-link"
+            href="https://doingfb.com/"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            {"\u5b98\u65b9\u793e\u533a"}
+          </a>
           <button
             className={`nav-link ${isDirectoryActive ? "active" : ""}`}
             type="button"
