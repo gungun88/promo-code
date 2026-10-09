@@ -1,0 +1,36 @@
+{
+  "project": "promo-code",
+  "repo": "https://github.com/gungun88/promo-code.git",
+  "branch": "main",
+  "sshHost": "scrapify-vps",
+  "remotePath": "/opt/promo-code",
+  "localVerify": [
+    "node --check backend/server.mjs",
+    "npm run build",
+    "git diff --check"
+  ],
+  "deploy": [
+    "git pull --ff-only origin main",
+    "docker compose --env-file .env.production config",
+    "docker compose --env-file .env.production up -d --build",
+    "docker compose --env-file .env.production ps"
+  ],
+  "postDeployVerify": [
+    "git log -1 --oneline",
+    "docker compose --env-file .env.production ps",
+    "curl --fail --silent --show-error http://127.0.0.1:18518/api/health",
+    "curl --fail --silent --show-error --head http://127.0.0.1:18517"
+  ],
+  "protectedUntracked": [
+    ".env.production",
+    ".env",
+    "backup-*.sql",
+    "backup-*.sql.gz"
+  ],
+  "notes": [
+    "Keep the production environment file private; follow DEPLOY_1PANEL.md.",
+    "Never run docker compose down -v because it can remove the PostgreSQL data volume.",
+    "Confirm scrapify-vps is the promo-code production server before deployment."
+  ],
+  "healthCheck": "https://promo-code.cc/api/health"
+}
