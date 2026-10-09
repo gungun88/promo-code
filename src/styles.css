@@ -1685,13 +1685,29 @@ select {
 }
 
 .points-status-filter {
-  min-height: 42px;
+  min-height: 38px;
   min-width: 120px;
-  padding: 0 34px 0 12px;
-  color: #4d4552;
+  padding: 8px 30px 8px 14px;
+  color: #4d4850;
   background: #fff;
-  border: 1px solid #e3dce6;
-  border-radius: 10px;
+  border-radius: 4px;
+  box-shadow: none;
+  color-scheme: light;
+  transition: color 160ms ease, border-color 160ms ease, box-shadow 160ms ease, background 160ms ease;
+}
+
+.points-status-filter:hover {
+  background: #fff;
+}
+
+.points-status-filter:focus {
+  background: #fff;
+  box-shadow: 0 0 0 3px rgba(189, 25, 123, 0.1);
+  outline: 0;
+}
+
+.points-records-panel .admin-pagination {
+  margin: 16px 24px 0;
 }
 
 .points-package-list {
